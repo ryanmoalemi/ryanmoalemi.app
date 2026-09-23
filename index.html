@@ -5,19 +5,87 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ryan Moalemi — Apps</title>
   <meta name="description" content="Free apps and experiments by Ryan Moalemi.">
+  <meta property="og:title" content="Ryan Moalemi — Apps">
+  <meta property="og:description" content="Free apps and experiments by Ryan Moalemi.">
+  <meta property="og:url" content="https://ryanmoalemi.app/">
+  <meta property="og:type" content="website">
+  <link rel="canonical" href="https://ryanmoalemi.app/">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0d12'/%3E%3Ctext x='50%25' y='54%25' text-anchor='middle' font-family='system-ui,sans-serif' font-size='28' font-weight='700' fill='%237cf5c8'%3ERM%3C/text%3E%3C/svg%3E">
 </head>
 <body>
-  <main class="wrap">
-    <h1>Ryan Moalemi</h1>
-    <p>I’m Ryan Moalemi. Sometimes I have an idea for an app, and instead of doing whatever I’m supposed to be doing, I build it. This is where those questionable uses of my time end up.</p>
-    <p>Everything’s free. I’m just messing around, and taking dumb ideas further than they probably needed to go.</p>
+  <div class="glow glow-a" aria-hidden="true"></div>
+  <div class="glow glow-b" aria-hidden="true"></div>
 
-    <section class="apps" aria-labelledby="apps-heading">
-      <h2 id="apps-heading">Apps</h2>
-      <p class="muted">Links to apps will show up here.</p>
-      <ul class="app-list"></ul>
+  <header class="top">
+    <a class="mark" href="/">RM</a>
+    <nav class="nav">
+      <a href="#apps">Apps</a>
+      <a href="https://ryanmoalemi.blog">Blog</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Apps &amp; experiments</p>
+      <h1>Hi, I’m <span class="accent">Ryan Moalemi</span>.</h1>
+      <p class="lede">Sometimes I have an idea for an app, and instead of doing whatever I’m supposed to be doing, I build it. This is where those questionable uses of my time end up.</p>
+      <p class="lede muted">Everything’s free. I’m just messing around, and taking dumb ideas further than they probably needed to go.</p>
+      <div class="hero-actions">
+        <a class="btn primary" href="#apps">See the apps</a>
+        <a class="btn ghost" href="mailto:aftermarketproducts71@gmail.com?subject=ryanmoalemi.app">Say hello</a>
+      </div>
+    </section>
+
+    <section class="apps" id="apps" aria-labelledby="apps-heading">
+      <div class="section-head">
+        <h2 id="apps-heading">Apps</h2>
+        <p class="section-sub">Things I’m shipping for fun. More links landing here soon.</p>
+      </div>
+
+      <ul class="app-grid" id="app-grid">
+        <!-- Add apps as list items:
+        <li>
+          <a class="app-card" href="https://example.com">
+            <span class="app-icon" aria-hidden="true">01</span>
+            <span class="app-body">
+              <span class="app-name">App name</span>
+              <span class="app-desc">One-line description.</span>
+            </span>
+            <span class="app-arrow" aria-hidden="true">→</span>
+          </a>
+        </li>
+        -->
+      </ul>
+
+      <div class="empty" id="apps-empty">
+        <div class="empty-card">
+          <p class="empty-title">Nothing listed yet</p>
+          <p class="empty-copy">When you’re ready, drop app links into this page and they’ll show up as cards here.</p>
+        </div>
+      </div>
     </section>
   </main>
+
+  <footer class="foot">
+    <p>© <span id="year"></span> Ryan Moalemi</p>
+    <p class="foot-links">
+      <a href="https://ryanmoalemi.app">ryanmoalemi.app</a>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/ryanmoalemi">GitHub</a>
+    </p>
+  </footer>
+
+  <script>
+    document.getElementById('year').textContent = new Date().getFullYear();
+    var grid = document.getElementById('app-grid');
+    var empty = document.getElementById('apps-empty');
+    if (grid && grid.children.length > 0) {
+      empty.hidden = true;
+    }
+  </script>
 </body>
 </html>
