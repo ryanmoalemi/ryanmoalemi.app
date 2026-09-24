@@ -247,33 +247,8 @@ img.app-icon {
   max-width: none;
   border-radius: 0.95rem;
   object-fit: cover;
-  background: #e8dfd0;
-  display: block;
-}
-
-.app-card-feature {
-  grid-template-columns: minmax(220px, 380px) minmax(0, 1fr);
-  align-items: center;
-  gap: 1.15rem;
-  padding: 0.75rem;
-}
-
-.app-preview {
-  width: 100%;
-  height: auto;
-  aspect-ratio: 1;
-  object-fit: cover;
-  border-radius: 16px;
   background: #f7ede1;
-}
-
-.app-copy {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 0.95rem;
-  align-items: center;
-  min-width: 0;
-  padding: 0.45rem 0.45rem 0.45rem 0.15rem;
+  display: block;
 }
 
 .app-body { display: grid; gap: 0.2rem; min-width: 0; }
@@ -321,6 +296,4 @@ img.app-icon {
   .hero-actions { width: 100%; }
   .btn { flex: 1 1 auto; }
   .foot { flex-direction: column; align-items: flex-start; }
-  .app-card-feature { grid-template-columns: 1fr; gap: 0.85rem; }
-  .app-copy { padding: 0.2rem 0.35rem 0.4rem; }
 }
