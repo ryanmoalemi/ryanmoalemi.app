@@ -233,11 +233,22 @@ img { max-width: 100%; display: block; }
   border-radius: 0.9rem;
   display: grid;
   place-items: center;
+  overflow: hidden;
   background: linear-gradient(145deg, rgba(124,245,200,0.18), rgba(110,168,255,0.12));
   color: var(--accent);
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+
+img.app-icon {
+  width: 3.25rem;
+  height: 3.25rem;
+  max-width: none;
+  border-radius: 0.95rem;
+  object-fit: cover;
+  background: #e8dfd0;
+  display: block;
 }
 
 .app-body { display: grid; gap: 0.2rem; min-width: 0; }
