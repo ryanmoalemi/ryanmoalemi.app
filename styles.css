@@ -87,7 +87,26 @@ img { max-width: 100%; display: block; }
 .nav a:hover { color: var(--text); }
 
 .hero {
-  padding: 4.5rem 0 3.5rem;
+  padding: 1.75rem 0 3.5rem;
+}
+
+.hero-logo {
+  margin: 0 0 1.15rem;
+  line-height: 0;
+}
+
+.rm-orb {
+  display: block;
+  width: 200px;
+  height: 200px;
+  background: transparent;
+}
+
+.rm-orb-fallback {
+  display: block;
+  width: 200px;
+  height: 200px;
+  background: transparent;
 }
 
 .eyebrow {
@@ -291,7 +310,10 @@ img.app-icon {
 .foot-links { display: flex; gap: 0.55rem; align-items: center; }
 
 @media (max-width: 640px) {
-  .hero { padding-top: 3rem; }
+  .hero { padding-top: 1.15rem; }
+  .hero-logo { margin-bottom: 0.85rem; }
+  .rm-orb,
+  .rm-orb-fallback { width: 148px; height: 148px; }
   .hero-heading { gap: 0.85rem; }
   .hero-actions { width: 100%; }
   .btn { flex: 1 1 auto; }
