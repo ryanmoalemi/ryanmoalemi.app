@@ -1,6 +1,7 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="no-js">
 <head>
+  <script>document.documentElement.classList.remove("no-js");</script>
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-9SM4F411VZ"></script>
   <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-9SM4F411VZ');</script>
@@ -40,7 +41,13 @@
   <div class="glow glow-a" aria-hidden="true"></div>
   <div class="glow glow-b" aria-hidden="true"></div>
   <header class="top">
-    <a class="mark" href="/">RM</a>
+    <a class="mark" href="/">
+      <canvas class="rm-orb" role="img" aria-label="RM logo" width="40" height="40"></canvas>
+      <noscript>
+        <style>.mark .rm-orb{display:none !important}</style>
+        <img class="rm-orb-fallback" src="/assets/rm-orb-fallback.png" alt="RM logo" width="40" height="40">
+      </noscript>
+    </a>
     <nav class="nav">
       <a href="/#apps">Apps</a>
       <a href="https://ryanmoalemi.blog">Blog</a>
@@ -80,6 +87,7 @@
       <a href="/privacy/">Privacy</a>
     </p>
   </footer>
+  <script src="/assets/rm-orb.js"></script>
   <script>document.getElementById('year').textContent = new Date().getFullYear();</script>
 </body>
 </html>
