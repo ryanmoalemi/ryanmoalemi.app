@@ -62,24 +62,40 @@ img { max-width: 100%; display: block; }
 .mark {
   width: 2.5rem;
   height: 2.5rem;
-  flex: none;
-  display: block;
-  line-height: 0;
+  display: grid;
+  place-items: center;
   border-radius: 0.85rem;
+  background: #0f1218;
+  border: 1px solid var(--line);
   text-decoration: none;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
 }
-.mark:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+
+.mark-letters {
+  background-image: linear-gradient(
+    105deg,
+    #eafff7 0%,
+    #7cf5c8 25%,
+    #a78bfa 50%,
+    #7cf5c8 75%,
+    #eafff7 100%
+  );
+  background-size: 200% 100%;
+  background-position: 0% 50%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: rm-sheen 5s linear infinite;
 }
-.mark .rm-orb,
-.mark .rm-orb-fallback {
-  width: 2.5rem;
-  height: 2.5rem;
-  display: block;
-  background: transparent;
+
+@keyframes rm-sheen {
+  from { background-position: 0% 50%; }
+  to { background-position: 200% 50%; }
 }
-.no-js .mark .rm-orb { display: none; }
 
 .nav {
   display: flex;
@@ -136,6 +152,51 @@ img { max-width: 100%; display: block; }
 .accent {
   color: var(--accent);
   font-style: italic;
+}
+
+.typewrite {
+  display: inline;
+}
+.typewrite-row { display: none; }
+.typewrite-cursor-reserve { display: none; }
+
+html.type-on .typewrite {
+  display: grid;
+  width: 100%;
+}
+html.type-on .typewrite-ghost,
+html.type-on .typewrite-row {
+  grid-area: 1 / 1;
+}
+html.type-on .typewrite-ghost { visibility: hidden; }
+html.type-on .typewrite-cursor-reserve {
+  display: inline;
+  visibility: hidden;
+}
+html.type-on .typewrite-row {
+  display: block;
+  align-self: start;
+  justify-self: stretch;
+}
+
+.typewrite-cursor {
+  color: var(--accent);
+  font-weight: 300;
+  font-style: normal;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mark-letters {
+    animation: none;
+    background-position: 0% 50%;
+  }
+  .typewrite-cursor { animation: none; }
 }
 
 .lede {
