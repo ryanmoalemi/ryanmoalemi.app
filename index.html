@@ -39,6 +39,13 @@
 
   <main>
     <section class="hero">
+      <div class="hero-logo">
+        <canvas class="rm-orb" role="img" aria-label="RM logo" width="200" height="200"></canvas>
+        <noscript>
+          <style>.rm-orb{display:none}</style>
+          <img class="rm-orb-fallback" src="assets/rm-orb-fallback.png" alt="RM logo" width="200" height="200">
+        </noscript>
+      </div>
       <p class="eyebrow">Apps &amp; experiments</p>
       <div class="hero-heading">
         <img class="portrait" src="assets/ryan-moalemi.jpg" alt="Ryan Moalemi" width="88" height="88" loading="eager">
@@ -103,6 +110,7 @@
     </p>
   </footer>
 
+  <script src="assets/rm-orb.js"></script>
   <script>
     document.getElementById('year').textContent = new Date().getFullYear();
     var grid = document.getElementById('app-grid');
