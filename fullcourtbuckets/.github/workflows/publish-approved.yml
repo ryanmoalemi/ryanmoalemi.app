@@ -1,0 +1,55 @@
+name: Publish approved draft
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: string
+      branch:
+        description: Head branch name
+        required: false
+        type: string
+        default: ''
+      nonce:
+        description: Editor publish id
+        required: false
+        type: string
+        default: ''
+  pull_request:
+    types: [labeled]
+permissions:
+  contents: read
+concurrency:
+  group: fcb-publish-${{ github.event.inputs.pr || github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: |
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'approved' && github.event.pull_request.base.ref == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test the listing rebuild
+        run: python -m unittest discover -s automation -p 'test_publish_approved.py' -v
+      - name: Merge main, rebuild shared listings, and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr || github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.inputs.branch || github.event.pull_request.head.ref }}
+          PUBLISH_NONCE: ${{ github.event.inputs.nonce }}
+        run: python automation/publish_approved.py

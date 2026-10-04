@@ -790,6 +790,692 @@ function autosaveKey(repo, pr, path) {
   return "rm-editor-draft:" + String(repo || "") + ":" + String(pr || "") + ":" + String(path || "");
 }
 
+var PENDING_PREFIX = "rm-editor-pending:";
+var PERMISSION_CONTENTS = "Contents: Read and write";
+var PERMISSION_PULLS = "Pull requests: Read and write";
+var TOKEN_SETTINGS_URL = "https://github.com/settings/personal-access-tokens";
+
+function isFineGrainedToken(value) {
+  return cleanToken(value).indexOf("github_pat_") === 0;
+}
+
+function repoLabel(full) {
+  var parts = String(full || "").split("/");
+  return parts[parts.length - 1] || String(full || "");
+}
+
+function pendingKey(repo, number, jsonPath) {
+  return PENDING_PREFIX + String(repo || "") + ":" + String(number || "") + ":" + String(jsonPath || "");
+}
+
+function plainText(value) {
+  var text = String(value == null ? "" : value);
+  if (/<!doctype|<html\b|<body\b|<head\b/i.test(text)) return "GitHub sent a page instead of an answer.";
+  return text
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isAccessError(status, message) {
+  var text = String(message || "").toLowerCase();
+  if (text.indexOf("rate limit") !== -1) return false;
+  if (Number(status) === 403) return true;
+  return text.indexOf("not accessible") !== -1 || text.indexOf("personal access token") !== -1;
+}
+
+function probeAllows(result, kind) {
+  var code = Number(result && result.status) || 0;
+  var text = String(result && result.message || "").toLowerCase();
+  if (!code) return null;
+  if (text.indexOf("rate limit") !== -1) return null;
+  if (code === 401) return false;
+  if (code === 403) return false;
+  if (kind === "repo" && code === 404) return false;
+  return true;
+}
+
+function missingPermissionNames(probe) {
+  if (!probe || probe.unknown) return [];
+  var missing = [];
+  if (probe.contentsRead === false || probe.contentsWrite === false) missing.push(PERMISSION_CONTENTS);
+  if (probe.pullsRead === false || probe.pullsWrite === false) missing.push(PERMISSION_PULLS);
+  return missing;
+}
+
+function permissionBanner(entries) {
+  var groups = [];
+  (entries || []).forEach(function (entry) {
+    var missing = entry && entry.missing ? entry.missing : missingPermissionNames(entry);
+    if (!missing.length) return;
+    var key = missing.join("|");
+    var group = null;
+    for (var i = 0; i < groups.length; i++) {
+      if (groups[i].key === key) group = groups[i];
+    }
+    if (!group) {
+      group = { key: key, missing: missing.slice(), repos: [] };
+      groups.push(group);
+    }
+    group.repos.push(repoLabel(entry.repo));
+  });
+  if (!groups.length) return "";
+  return groups.map(function (group) {
+    return "Missing " + group.missing.join(", ") + " on " + group.repos.join(", ");
+  }).join(". ") + ".";
+}
+
+function permissionsFromFailure(url, status, message, accepted) {
+  if (!isAccessError(status, message) && !String(accepted || "")) return [];
+  var header = String(accepted || "").toLowerCase();
+  var names = [];
+  if (header.indexOf("contents") !== -1) names.push(PERMISSION_CONTENTS);
+  if (header.indexOf("pull_request") !== -1 || header.indexOf("pull-request") !== -1) names.push(PERMISSION_PULLS);
+  if (names.length) return names;
+  var path = String(url || "").toLowerCase();
+  if (/\/graphql/.test(path) || /\/pulls\/|\/issues\/|\/merges|\/labels/.test(path)) return [PERMISSION_PULLS];
+  if (/\/git\/|\/contents\//.test(path)) return [PERMISSION_CONTENTS];
+  if (isAccessError(status, message)) return [PERMISSION_CONTENTS, PERMISSION_PULLS];
+  return [];
+}
+
+function writeFailureMessage(opts) {
+  opts = opts || {};
+  var perms = opts.permissions && opts.permissions.length ? opts.permissions : [PERMISSION_CONTENTS, PERMISSION_PULLS];
+  var repo = repoLabel(opts.repo);
+  var kept;
+  if (opts.committed && opts.kept === "note") {
+    kept = "The edits are saved on the branch. The note is still in this browser. GitHub did not receive the note.";
+  } else if (opts.kept === "note") {
+    kept = "The note is saved in this browser. GitHub did not receive it.";
+  } else if (opts.committed) {
+    kept = "The edits are saved on the branch. GitHub did not finish publishing.";
+  } else {
+    kept = "The edits are saved in this browser. GitHub did not receive them.";
+  }
+  var names = perms.map(function (item) {
+    return String(item).replace(": Read and write", "");
+  });
+  var fix = names.length > 1 ? "set " + names.join(" and ") + " to Read and write" : "set " + names[0] + " to Read and write";
+  return kept + " The token is missing " + perms.join(", ") + " on " + repo + ". Open token settings, " + fix + ", then press Retry.";
+}
+
+var PUBLISH_WORKFLOW_REPOS = ["ryanmoalemi/fullcourtbuckets"];
+
+function usesPublishWorkflow(repo) {
+  return PUBLISH_WORKFLOW_REPOS.indexOf(String(repo || "")) !== -1;
+}
+
+function publishNonce() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+function publishWorkflowResult(comments, nonce) {
+  var token = String(nonce || "");
+  if (!token) return { status: "pending", message: "" };
+  var latest = null;
+  (comments || []).forEach(function (comment) {
+    var body = String(comment && comment.body || "");
+    var first = body.split(/\r?\n/)[0];
+    var parts = first.split(/\s+/);
+    var created = Date.parse(comment && comment.created_at || "") || 0;
+    var failed = parts[0] === "fcb-publish:failed" && parts.indexOf(token) !== -1;
+    var published = parts[0] === "fcb-publish:published" && parts.indexOf(token) !== -1;
+    if (!failed && !published) return;
+    if (!latest || created >= latest.created) latest = { created: created, body: body, failed: failed };
+  });
+  if (!latest) return { status: "pending", message: "" };
+  if (latest.failed) {
+    var message = latest.body.split(/\r?\n/).slice(1).join(" ").replace(/\s+/g, " ").trim();
+    return { status: "failed", message: message };
+  }
+  return { status: "published", message: "" };
+}
+
+var SHARED_LISTING_EXACT = {
+  "articles.json": true,
+  "index.html": true,
+  "news/index.html": true,
+  "authors/ryan-moalemi/index.html": true,
+  "pages-sitemap.xml": true,
+  "sitemap.xml": true,
+  "sitemap/index.html": true
+};
+
+function isSharedListing(path) {
+  var name = String(path || "").replace(/\\/g, "/").replace(/^\.\//, "");
+  if (SHARED_LISTING_EXACT[name]) return true;
+  var parts = name.split("/");
+  return parts.length === 4 && parts[0] === "wnba" && parts[1] === "teams" && parts[3] === "index.html";
+}
+
+function isMergeConflictError(status, message) {
+  var text = String(message || "");
+  return Number(status) === 409 || /merge conflict/i.test(text);
+}
+
+function hasConflictMarkers(text) {
+  var value = String(text || "");
+  return value.indexOf("<<<<<<<") !== -1 || value.indexOf(">>>>>>>") !== -1;
+}
+
+function indexTree(entries) {
+  var map = {};
+  (entries || []).forEach(function (entry) {
+    if (!entry || entry.type === "tree" || !entry.path) return;
+    map[entry.path] = { sha: entry.sha || "", mode: entry.mode || "100644" };
+  });
+  return map;
+}
+
+function integrationPlan(baseEntries, mainEntries, headEntries) {
+  var base = indexTree(baseEntries);
+  var main = indexTree(mainEntries);
+  var head = indexTree(headEntries);
+  var paths = {};
+  Object.keys(base).forEach(function (path) { paths[path] = true; });
+  Object.keys(main).forEach(function (path) { paths[path] = true; });
+  Object.keys(head).forEach(function (path) { paths[path] = true; });
+  var overlay = [];
+  var protectedShas = {};
+  Object.keys(paths).forEach(function (path) {
+    if (isSharedListing(path)) return;
+    var baseSha = base[path] ? base[path].sha : "";
+    var mainSha = main[path] ? main[path].sha : "";
+    var headSha = head[path] ? head[path].sha : "";
+    var headMode = head[path] ? head[path].mode : "";
+    var mainMode = main[path] ? main[path].mode : "";
+    var prTouched = headSha !== baseSha;
+    var resultSha = prTouched ? headSha : mainSha;
+    var resultMode = prTouched ? headMode : mainMode;
+    if (prTouched && headSha) protectedShas[path] = headSha;
+    if (resultSha === mainSha) return;
+    overlay.push({
+      path: path,
+      mode: resultMode || "100644",
+      type: "blob",
+      sha: resultSha || null
+    });
+  });
+  return { overlay: overlay, protectedShas: protectedShas };
+}
+
+function protectedDrift(protectedShas, mainEntries, overlay) {
+  var main = indexTree(mainEntries);
+  var placed = {};
+  (overlay || []).forEach(function (entry) {
+    if (entry && entry.path && entry.sha) placed[entry.path] = entry.sha;
+  });
+  var drifted = "";
+  Object.keys(protectedShas || {}).forEach(function (path) {
+    if (drifted) return;
+    var want = protectedShas[path];
+    var have = placed[path] || (main[path] && main[path].sha) || "";
+    if (have !== want) drifted = path;
+  });
+  return drifted;
+}
+
+function mergeArticleLists(mainArticles, prArticles) {
+  var bySlug = {};
+  function take(list) {
+    (list || []).forEach(function (article) {
+      if (!article || typeof article !== "object") return;
+      var slug = String(article.slug || "").trim();
+      if (!slug) return;
+      bySlug[slug] = Object.assign({}, article);
+    });
+  }
+  take(mainArticles);
+  take(prArticles);
+  var ordered = [];
+  var seen = {};
+  function push(list) {
+    (list || []).forEach(function (article) {
+      if (!article || typeof article !== "object") return;
+      var slug = String(article.slug || "").trim();
+      if (!slug || seen[slug] || !bySlug[slug]) return;
+      seen[slug] = true;
+      ordered.push(bySlug[slug]);
+    });
+  }
+  push(prArticles);
+  push(mainArticles);
+  ordered.sort(function (a, b) {
+    var left = String(a.date || "");
+    var right = String(b.date || "");
+    if (left === right) return 0;
+    return left < right ? 1 : -1;
+  });
+  return ordered;
+}
+
+function articleSlugOk(slug) {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(String(slug || ""));
+}
+
+function articleHref(article) {
+  var slug = String(article && article.slug || "").trim().replace(/^\/+|\/+$/g, "");
+  if (!articleSlugOk(slug)) return "";
+  return "/news/" + slug + "/";
+}
+
+function prepareArticles(mainArticles, prArticles) {
+  return mergeArticleLists(mainArticles, prArticles).map(function (article) {
+    var href = articleHref(article);
+    var ordered = {};
+    ["slug", "url", "title", "description", "category", "date", "image", "imageAlt"].forEach(function (key) {
+      if (key === "url") {
+        if (href) ordered.url = href;
+      } else if (Object.prototype.hasOwnProperty.call(article, key)) {
+        ordered[key] = article[key];
+      }
+    });
+    Object.keys(article).forEach(function (key) {
+      if (!Object.prototype.hasOwnProperty.call(ordered, key)) ordered[key] = article[key];
+    });
+    return ordered;
+  }).filter(function (article) { return articleHref(article); });
+}
+
+function orderedArticles(articles) {
+  return (articles || []).slice().sort(function (a, b) {
+    var left = String(a && a.date || "");
+    var right = String(b && b.date || "");
+    if (left === right) return 0;
+    return left < right ? 1 : -1;
+  });
+}
+
+function escHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
+function formatStoryDate(iso) {
+  var parts = String(iso || "").split("-");
+  if (parts.length < 3) return "";
+  var months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var month = months[Number(parts[1]) - 1];
+  var day = Number(parts[2]);
+  if (!month || !day) return "";
+  return month + " " + day + ", " + parts[0];
+}
+
+function newsListItem(article) {
+  var title = String(article.title || "");
+  var summary = String(article.description || "");
+  var image = String(article.image || "");
+  var alt = String(article.imageAlt || title);
+  var when = String(article.date || "");
+  var label = formatStoryDate(when);
+  var thumb = image ? '<img src="' + escHtml(image) + '" alt="' + escHtml(alt) + '">' : "";
+  return '<li><a class="news-item" href="' + escHtml(articleHref(article)) + '">' + thumb +
+    '<span class="news-copy"><time datetime="' + escHtml(when) + '">' + escHtml(label) + "</time>" +
+    "<h2>" + escHtml(title) + "</h2><p>" + escHtml(summary) + "</p></span></a></li>";
+}
+
+function storyCard(article) {
+  var title = String(article.title || "");
+  var image = String(article.image || "");
+  var alt = String(article.imageAlt || title);
+  return '<a class="article-card" href="' + escHtml(articleHref(article)) + '">' +
+    '<div class="article-visual"><img src="' + escHtml(image) + '" alt="' + escHtml(alt) + '"></div>' +
+    '<div class="article-copy"><div class="cat">' + escHtml(article.category || "") + "</div>" +
+    "<h3>" + escHtml(title) + "</h3><p>" + escHtml(article.description || "") + "</p>" +
+    '<div class="date">' + escHtml(formatStoryDate(article.date)) + "</div></div></a>";
+}
+
+function replaceMarked(text, name, inner) {
+  var pattern = new RegExp("<!-- " + name + ":start -->[\\s\\S]*?<!-- " + name + ":end -->");
+  var block = "<!-- " + name + ":start -->" + inner + "<!-- " + name + ":end -->";
+  if (pattern.test(text)) return text.replace(pattern, block);
+  return text;
+}
+
+function applyHomepageStories(text, articles) {
+  var html = String(text || "");
+  if (html.indexOf('id="latest"') === -1 || html.indexOf('id="older-stories"') === -1) return html;
+  var ordered = orderedArticles(articles);
+  if (!ordered.length) return html;
+  var featured = ordered[0];
+  var href = articleHref(featured);
+  html = html.replace(/(<a class="feature feature-link" id="featured-story" href=")[^"]*(")/, function (match, open, close) {
+    return open + href + close;
+  });
+  html = html.replace(/(<h1 id="featured-title">)[\s\S]*?(<\/h1>)/, function (match, open, close) {
+    return open + escHtml(featured.title || "") + close;
+  });
+  html = html.replace(/(<p id="featured-dek">)[\s\S]*?(<\/p>)/, function (match, open, close) {
+    return open + escHtml(featured.description || "") + close;
+  });
+  var meta = String(featured.category || "") + " · " + formatStoryDate(featured.date);
+  html = html.replace(/(<div class="meta" id="featured-meta">)[\s\S]*?(<\/div>)/, function (match, open, close) {
+    return open + escHtml(meta) + close;
+  });
+  var cards = ordered.slice(1).map(storyCard).join("");
+  if (html.indexOf("<!-- fcb-stories:start -->") !== -1) {
+    html = replaceMarked(html, "fcb-stories", cards);
+  } else {
+    html = html.replace(
+      '<div class="story-list" id="older-stories"></div>',
+      '<div class="story-list" id="older-stories"><!-- fcb-stories:start -->' + cards + "<!-- fcb-stories:end --></div>"
+    );
+  }
+  return html;
+}
+
+function articleTickerInner(html) {
+  var match = /<div class="ticker-text">([\s\S]*?)<\/div>/.exec(String(html || ""));
+  return match ? match[1] : "";
+}
+
+function applyHomepageTicker(html, inner) {
+  var text = String(html || "");
+  if (!inner || text.indexOf('<div class="ticker-text">') === -1) return text;
+  var used = false;
+  return text.replace(/<div class="ticker-text">[\s\S]*?<\/div>/, function (match) {
+    if (used) return match;
+    used = true;
+    return match.slice(0, match.indexOf(">") + 1) + inner + "</div>";
+  });
+}
+
+function replaceNewsList(html, articles) {
+  var text = String(html || "");
+  if (text.indexOf('class="news-list"') === -1) return text;
+  var cards = orderedArticles(articles).map(newsListItem).join("");
+  return text.replace(/<ol class="news-list">[\s\S]*?<\/ol>/, '<ol class="news-list">' + cards + "</ol>");
+}
+
+function syncNewsSitemap(text, articles) {
+  var xml = String(text || "");
+  if (xml.indexOf("</urlset>") === -1) return xml;
+  var base = "https://fullcourtbuckets.com";
+  (articles || []).forEach(function (article) {
+    var href = articleHref(article);
+    if (!href) return;
+    var slug = String(article.slug || "").trim();
+    var oldLoc = base + "/" + slug + "/";
+    var next = base + href;
+    xml = xml.replace(new RegExp("(<loc>\\s*)" + oldLoc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s*</loc>)"), function (match, open, close) {
+      return open + next + close;
+    });
+    if (xml.indexOf(next) === -1) {
+      var lastmod = String(article.date || "2026-09-29");
+      var block = "  <url>\n    <loc>" + next + "</loc>\n    <lastmod>" + lastmod + "</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n";
+      xml = xml.replace("</urlset>", block + "</urlset>");
+    }
+  });
+  var hub = base + "/news/";
+  if (!new RegExp("<loc>\\s*" + hub.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*</loc>").test(xml)) {
+    xml = xml.replace("</urlset>", "  <url>\n    <loc>" + hub + "</loc>\n    <lastmod>2026-09-29</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n</urlset>");
+  }
+  return xml;
+}
+
+function sitemapNewsSection(articles, hasCouples) {
+  var items = [];
+  orderedArticles(articles).forEach(function (article) {
+    var href = articleHref(article);
+    if (!href) return;
+    items.push("<li><a href=\"" + escHtml(href) + "\">" + escHtml(article.title || article.slug) + "</a></li>");
+  });
+  if (hasCouples) items.push('<li><a href="/wnba/couples/">WNBA Couples</a></li>');
+  if (!items.length) return "";
+  return '<section class="section" id="sitemap-news"><h2>News</h2><ul class="sitemap-list">' + items.join("") + "</ul></section>";
+}
+
+function refreshSitemapNews(html, articles, hasCouples) {
+  var text = String(html || "");
+  var section = sitemapNewsSection(articles, hasCouples);
+  if (!section || text.indexOf('id="sitemap-news"') === -1) return text;
+  return text.replace(/<section class="section" id="sitemap-news">[\s\S]*?<\/section>/, section);
+}
+
+function teamNewsSection(articles, teamSlug) {
+  var slug = String(teamSlug || "");
+  var name = slug.split("-").filter(Boolean).map(function (part) {
+    return part.charAt(0).toUpperCase() + part.slice(1);
+  }).join(" ");
+  var items = [];
+  orderedArticles(articles).forEach(function (article) {
+    var title = String(article.title || "").trim();
+    if (!title || !articleHref(article)) return;
+    var teams = Array.isArray(article.teams) ? article.teams : [];
+    var blob = title + " " + String(article.description || "");
+    var named = false;
+    if (name) {
+      var pattern = new RegExp("(^|[^A-Za-z0-9])" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "([^A-Za-z0-9]|$)");
+      named = pattern.test(blob);
+    }
+    if (teams.indexOf(slug) === -1 && !named) return;
+    items.push('<li><a class="inline-link" href="' + escHtml(articleHref(article)) + '">' + escHtml(title) + "</a></li>");
+  });
+  if (!items.length) return "";
+  return '<section class="section" id="team-news"><p class="eyebrow">News</p><h2>Latest stories</h2><ul class="teammate-list">' + items.join("") + "</ul></section>";
+}
+
+function refreshTeamNews(html, section) {
+  var text = String(html || "");
+  var pattern = /<section class="section" id="team-news">[\s\S]*?<\/section>/;
+  if (pattern.test(text)) return text.replace(pattern, section || "");
+  if (!section) return text;
+  var needle = 'href="/wnba/teams/"';
+  var index = text.indexOf(needle);
+  if (index === -1) return text;
+  var start = text.lastIndexOf("<p", index);
+  if (start === -1) return text;
+  return text.slice(0, start) + section + text.slice(start);
+}
+
+function rebuildSharedTexts(texts, articles, tickerInner, hasCouples) {
+  var out = {};
+  var conflict = "";
+  function put(path, value) {
+    if (value == null) return;
+    if (!conflict && hasConflictMarkers(value)) conflict = path;
+    out[path] = value;
+  }
+  if (texts && texts["index.html"] != null) {
+    put("index.html", applyHomepageTicker(applyHomepageStories(texts["index.html"], articles), tickerInner));
+  }
+  if (texts && texts["news/index.html"] != null) put("news/index.html", replaceNewsList(texts["news/index.html"], articles));
+  if (texts && texts["authors/ryan-moalemi/index.html"] != null) {
+    put("authors/ryan-moalemi/index.html", replaceNewsList(texts["authors/ryan-moalemi/index.html"], articles));
+  }
+  ["pages-sitemap.xml", "sitemap.xml"].forEach(function (name) {
+    if (texts && texts[name] != null) put(name, syncNewsSitemap(texts[name], articles));
+  });
+  if (texts && texts["sitemap/index.html"] != null) {
+    put("sitemap/index.html", refreshSitemapNews(texts["sitemap/index.html"], articles, hasCouples));
+  }
+  Object.keys(texts || {}).forEach(function (path) {
+    var match = /^wnba\/teams\/([^/]+)\/index\.html$/.exec(path);
+    if (!match) return;
+    put(path, refreshTeamNews(texts[path], teamNewsSection(articles, match[1])));
+  });
+  return { files: out, conflict: conflict };
+}
+
+function decodeGitBlob(blob) {
+  var encoding = String(blob && blob.encoding || "");
+  var content = String(blob && blob.content || "");
+  if (encoding === "base64") {
+    var clean = content.replace(/\s/g, "");
+    if (typeof Buffer !== "undefined") return Buffer.from(clean, "base64").toString("utf8");
+    var binary = atob(clean);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+  return content;
+}
+
+function pendingNeeds(item) {
+  var steps = item && item.steps || {};
+  var needs = [];
+  if (steps.commit === "pending" || steps.sync === "pending") needs.push(PERMISSION_CONTENTS);
+  if (steps.comment === "pending" || steps.label === "pending" || steps.ready === "pending" || steps.workflow === "pending" || steps.merge === "pending") needs.push(PERMISSION_PULLS);
+  if (steps.sync === "pending" && needs.indexOf(PERMISSION_PULLS) === -1) needs.push(PERMISSION_PULLS);
+  return needs;
+}
+
+function blockedPermissions(item, gaps) {
+  var needs = pendingNeeds(item);
+  if (!needs.length) return [];
+  var repo = String(item && item.repo || "");
+  var head = String(item && item.headRepo || "");
+  var missing = [];
+  (gaps || []).forEach(function (entry) {
+    if (!entry) return;
+    if (entry.repo !== repo && entry.repo !== head && repoLabel(entry.repo) !== repoLabel(repo)) return;
+    var have = entry.missing || missingPermissionNames(entry);
+    have.forEach(function (name) {
+      if (needs.indexOf(name) !== -1 && missing.indexOf(name) === -1) missing.push(name);
+    });
+  });
+  return missing;
+}
+
+function parsePending(raw) {
+  try {
+    var data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!data || typeof data !== "object") return null;
+    if (!data.repo || data.number == null || data.number === "") return null;
+    var action = data.action || "save";
+    if (action !== "save" && action !== "send-back" && action !== "publish" && action !== "comment") return null;
+    var steps = data.steps || {};
+    function step(name, fallback) {
+      var value = steps[name] || fallback;
+      if (value !== "pending" && value !== "done" && value !== "skip") return fallback;
+      return value;
+    }
+    return {
+      action: action,
+      repo: String(data.repo),
+      headRepo: String(data.headRepo || data.repo),
+      number: Number(data.number),
+      jsonPath: String(data.jsonPath || ""),
+      branch: String(data.branch || ""),
+      nodeId: String(data.nodeId || ""),
+      note: String(data.note || ""),
+      comments: Array.isArray(data.comments) ? data.comments : [],
+      title: String(data.title || ""),
+      slug: String(data.slug || ""),
+      description: String(data.description || ""),
+      hero: String(data.hero || ""),
+      body: String(data.body || ""),
+      files: Array.isArray(data.files) ? data.files : [],
+      steps: {
+        commit: step("commit", "skip"),
+        comment: step("comment", "skip"),
+        label: step("label", "skip"),
+        ready: step("ready", "skip"),
+        sync: step("sync", "skip"),
+        workflow: step("workflow", "skip"),
+        merge: step("merge", "skip"),
+        deploy: step("deploy", "skip")
+      },
+      savedAt: String(data.savedAt || ""),
+      liveUrl: String(data.liveUrl || ""),
+      workflowNonce: String(data.workflowNonce || ""),
+      syncTree: String(data.syncTree || ""),
+      syncMain: String(data.syncMain || "")
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+function isDraftMergeError(message) {
+  return /still a draft/i.test(String(message || ""));
+}
+
+function graphqlProblems(body) {
+  var errors = body && body.errors;
+  if (!Array.isArray(errors)) return [];
+  return errors.map(function (err) {
+    return {
+      type: String(err && err.type || ""),
+      message: plainText(err && err.message || "")
+    };
+  }).filter(function (err) { return err.message || err.type; });
+}
+
+function graphqlAccessError(body) {
+  return graphqlProblems(body).some(function (err) {
+    return err.type.toUpperCase() === "FORBIDDEN" || isAccessError(0, err.message);
+  });
+}
+
+function graphqlMessage(body) {
+  return graphqlProblems(body).map(function (err) { return err.message; }).filter(Boolean).join(" ");
+}
+
+function isLiveSiteUrl(url) {
+  try {
+    var parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    if (parsed.username || parsed.password) return false;
+    if (parsed.hostname === "api.github.com" || parsed.hostname === "github.com") return false;
+    return !!parsed.hostname;
+  } catch (err) {
+    return false;
+  }
+}
+
+function livePageReady(html, title, status) {
+  if (Number(status) !== 200) return false;
+  var page = String(html || "");
+  var want = String(title || "").replace(/\s+/g, " ").trim();
+  if (!want) return true;
+  if (page.indexOf(want) !== -1) return true;
+  var escaped = escapeHtmlText(want);
+  return !!escaped && escaped !== want && page.indexOf(escaped) !== -1;
+}
+
+function formatPacificTime(date) {
+  var when = date instanceof Date ? date : new Date(date);
+  if (!Number.isFinite(when.getTime())) return "";
+  var parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  }).formatToParts(when);
+  var hour = "";
+  var minute = "";
+  var period = "";
+  parts.forEach(function (part) {
+    if (part.type === "hour") hour = part.value;
+    if (part.type === "minute") minute = part.value;
+    if (part.type === "dayPeriod") period = String(part.value || "").toUpperCase();
+  });
+  if (!hour || !minute) return "";
+  return hour + ":" + minute + (period ? " " + period : "") + " PT";
+}
+
+function pendingDone(item) {
+  if (!item || !item.steps) return false;
+  var names = ["commit", "comment", "label", "ready", "sync", "workflow", "merge", "deploy"];
+  for (var i = 0; i < names.length; i++) {
+    var value = item.steps[names[i]];
+    if (value !== "done" && value !== "skip") return false;
+  }
+  return true;
+}
+
 function heroPresent(doc, hero) {
     if (!hero) return true;
     var target = String(hero).trim();
@@ -858,7 +1544,50 @@ function heroPresent(doc, hero) {
     applyArticle: applyArticle,
     diffWords: diffWords,
     formatSendBackNote: formatSendBackNote,
-    autosaveKey: autosaveKey
+    autosaveKey: autosaveKey,
+    PENDING_PREFIX: PENDING_PREFIX,
+    PERMISSION_CONTENTS: PERMISSION_CONTENTS,
+    PERMISSION_PULLS: PERMISSION_PULLS,
+    TOKEN_SETTINGS_URL: TOKEN_SETTINGS_URL,
+    isFineGrainedToken: isFineGrainedToken,
+    repoLabel: repoLabel,
+    pendingKey: pendingKey,
+    plainText: plainText,
+    isAccessError: isAccessError,
+    probeAllows: probeAllows,
+    missingPermissionNames: missingPermissionNames,
+    permissionBanner: permissionBanner,
+    permissionsFromFailure: permissionsFromFailure,
+    writeFailureMessage: writeFailureMessage,
+    pendingNeeds: pendingNeeds,
+    blockedPermissions: blockedPermissions,
+    parsePending: parsePending,
+    pendingDone: pendingDone,
+    usesPublishWorkflow: usesPublishWorkflow,
+    publishNonce: publishNonce,
+    publishWorkflowResult: publishWorkflowResult,
+    isSharedListing: isSharedListing,
+    isMergeConflictError: isMergeConflictError,
+    hasConflictMarkers: hasConflictMarkers,
+    indexTree: indexTree,
+    integrationPlan: integrationPlan,
+    protectedDrift: protectedDrift,
+    mergeArticleLists: mergeArticleLists,
+    prepareArticles: prepareArticles,
+    articleHref: articleHref,
+    applyHomepageStories: applyHomepageStories,
+    articleTickerInner: articleTickerInner,
+    applyHomepageTicker: applyHomepageTicker,
+    replaceNewsList: replaceNewsList,
+    syncNewsSitemap: syncNewsSitemap,
+    rebuildSharedTexts: rebuildSharedTexts,
+    decodeGitBlob: decodeGitBlob,
+    isDraftMergeError: isDraftMergeError,
+    graphqlAccessError: graphqlAccessError,
+    graphqlMessage: graphqlMessage,
+    isLiveSiteUrl: isLiveSiteUrl,
+    livePageReady: livePageReady,
+    formatPacificTime: formatPacificTime
   };
 
   root.RMLib = api;
