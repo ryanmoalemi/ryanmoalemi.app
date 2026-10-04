@@ -1,0 +1,13 @@
+# Published by GitHub Pages with Jekyll. Markdown stays in the repo for agents
+# and is left out of the site. The editor loads its JS, CSS, and HTML only, and
+# reads drafts from api.github.com.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor/bundle/
+  - vendor/cache/
+  - vendor/gems/
+  - vendor/ruby/
+  - CNAME
+  - "*.md"
