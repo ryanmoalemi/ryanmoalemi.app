@@ -1203,16 +1203,8 @@
     var meta = draft.meta || {};
     var sc = meta.scorecard || {};
     var cats = Array.isArray(sc.categories) ? sc.categories : [];
-    var flags = lib.aiFlags(sc);
     var summary = lib.articleSummary(meta);
-    var voiceBox = el("section", { class: "callout" }, [
-      el("h3", {}, "Human voice"),
-      flags.length
-        ? el("ul", { class: "point-list" }, flags.map(function (item) { return el("li", {}, item); }))
-        : el("p", { class: "info-copy" }, "No lines flagged.")
-    ]);
     var blocks = [
-      voiceBox,
       el("section", { class: "callout summary-box" }, [
         el("h3", {}, "Summary"),
         el("p", { class: "info-copy" }, summary || "No summary yet.")
@@ -1220,19 +1212,11 @@
     ];
     cats.forEach(function (cat) {
       var score = Number(cat && cat.score);
-      var max = Number(cat && cat.max);
-      if (!Number.isFinite(max) || max <= 0) max = 10;
-      if (!Number.isFinite(score)) score = 0;
-      var whole = Math.round(score);
-      var stars = lib.starCount(whole, max);
+      var whole = Number.isFinite(score) ? Math.round(score) : 0;
       blocks.push(el("div", { class: "cat" }, [
         el("div", { class: "cat-top" }, [
           el("strong", {}, (cat && cat.name) || "Category"),
-          el("span", { class: "cat-score" }, whole + "/" + max)
-        ]),
-        el("div", { class: "cat-stars" }, [
-          starsNode(stars),
-          el("span", { class: "star-num" }, lib.starPhrase(stars))
+          el("span", { class: "cat-score" }, whole + "/10")
         ]),
         cat && cat.reason ? el("p", { class: "reason" }, cat.reason) : null
       ]));
@@ -1258,12 +1242,14 @@
   function reviewLead(draft) {
     var meta = draft.meta || {};
     var bits = scoreBits(meta);
+    var sc = meta.scorecard || {};
     var points = lib.stringList(meta.unique);
-    var info = textOf((meta.scorecard || {}).info_gain);
+    var info = textOf(sc.info_gain);
+    var flags = lib.aiFlags(sc);
     var kids = [
       bits ? scoreRow(bits, true) : el("div", { class: "score-head" }, [
         el("p", { class: "score-total" }, "No score"),
-        badgeNode(lib.badgeFor(meta.scorecard))
+        badgeNode(lib.badgeFor(sc))
       ])
     ];
     var box = [el("h2", {}, "Information gain: what makes this unique and hard to copy")];
@@ -1275,7 +1261,16 @@
       box.push(el("p", { class: "warn-unique" }, "Nothing unique yet"));
     }
     if (info) box.push(el("p", { class: "info-copy" }, info));
-    kids.push(el("section", { class: "uniqueness" + (points.length ? "" : " warn"), id: "uniqueness" }, box));
+    var voice = [
+      el("h2", {}, "Human voice"),
+      flags.length
+        ? el("ul", { class: "point-list" }, flags.map(function (item) { return el("li", {}, item); }))
+        : el("p", { class: "info-copy" }, "No lines flagged.")
+    ];
+    kids.push(el("div", { class: "gain-row" }, [
+      el("section", { class: "uniqueness" + (points.length ? "" : " warn"), id: "uniqueness" }, box),
+      el("section", { class: "uniqueness voice", id: "human-voice" }, voice)
+    ]));
     return el("section", { class: "review-lead" }, kids);
   }
 

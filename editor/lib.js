@@ -94,28 +94,9 @@
   }
 
   function pointsScore(scorecard) {
-    var sc = scorecard || {};
-    if (sc.total != null && sc.total !== "") {
-      var total = Number(sc.total);
-      if (Number.isFinite(total)) {
-        var max = Number(sc.max);
-        if (!Number.isFinite(max) || max <= 0) max = 50;
-        return { score: total, max: max, kind: "total" };
-      }
-    }
-    var overall = overallScore(sc);
-    if (overall != null) return { score: overall, max: scoreMax(sc), kind: "overall" };
-    return null;
-  }
-
-  function badgeFromTotal(score, max) {
-    var scale = Number(max);
-    if (!Number.isFinite(scale) || scale <= 0) scale = 50;
-    var readyAt = 40 * (scale / 50);
-    var workAt = 31 * (scale / 50);
-    if (score + 1e-9 >= readyAt) return { key: "ready", label: "Ready" };
-    if (score + 1e-9 >= workAt) return { key: "needs-work", label: "Needs work" };
-    return { key: "rework", label: "Rework" };
+    var overall = overallScore(scorecard);
+    if (overall == null) return null;
+    return { score: overall, max: scoreMax(scorecard), kind: "overall" };
   }
 
   function categoryScore(scorecard, name) {
@@ -160,27 +141,10 @@
     return text + (Number(count) === 1 ? " star" : " stars");
   }
 
-  function gradeBadge(scorecard) {
-    var grade = String((scorecard && scorecard.grade) || "").trim().toLowerCase();
-    if (!grade) return null;
-    if (grade === "ready" || grade.charAt(0) === "a") return { key: "ready", label: "Ready" };
-    if (grade === "rework" || /^[cdf]/.test(grade)) return { key: "rework", label: "Rework" };
-    if (grade === "needs work" || grade === "needs-work" || grade.indexOf("needs") === 0 || grade.charAt(0) === "b") {
-      return { key: "needs-work", label: "Needs work" };
-    }
-    return null;
-  }
-
   function badgeFor(scorecard) {
     var sc = scorecard || {};
-    var points = pointsScore(sc);
-    if (points && points.kind === "total") return badgeFromTotal(points.score, points.max);
     var overall = overallScore(sc);
-    if (overall == null) {
-      var named = gradeBadge(sc);
-      if (named) return named;
-      return { key: "needs-work", label: "Needs work" };
-    }
+    if (overall == null) return { key: "needs-work", label: "Needs work" };
     var accuracy = categoryScore(sc, "accuracy");
     var info = categoryScore(sc, "information gain");
     if (info == null) info = categoryScore(sc, "info gain");

@@ -54,19 +54,21 @@ The file is strict JSON. No comments and no trailing commas.
   ],
   "unverified": [],
   "scorecard": {
-    "total": 45,
-    "max": 50,
+    "overall": 8,
+    "max": 10,
+    "stars": 4,
     "grade": "Ready",
     "categories": [
-      { "name": "Accuracy", "score": 10, "max": 10, "reason": "The numbers match the source." },
-      { "name": "Information gain", "score": 5, "max": 5, "reason": "The chart is not on other sites." },
-      { "name": "Effort and replication cost", "score": 5, "max": 5, "reason": "The table took original logging." },
-      { "name": "Originality", "score": 5, "max": 5, "reason": "The angle is ours." },
-      { "name": "Experience and expertise", "score": 5, "max": 5, "reason": "Written from watching the games." },
-      { "name": "Main content and layout", "score": 5, "max": 5, "reason": "The page leads with the chart." },
-      { "name": "Transparency", "score": 4, "max": 5, "reason": "Sources are named." },
-      { "name": "Writing craft", "score": 3, "max": 5, "reason": "Sentences are specific." },
-      { "name": "People-first purpose", "score": 3, "max": 5, "reason": "A reader can use the chart." }
+      { "name": "Accuracy", "score": 9, "max": 10, "reason": "The numbers match the source." },
+      { "name": "Information gain", "score": 6, "max": 10, "reason": "The chart is not on other sites." },
+      { "name": "Effort and replication cost", "score": 7, "max": 10, "reason": "The table took original logging." },
+      { "name": "Originality", "score": 7, "max": 10, "reason": "The angle is ours." },
+      { "name": "Experience and expertise", "score": 8, "max": 10, "reason": "Written from watching the games." },
+      { "name": "Main content and layout", "score": 8, "max": 10, "reason": "The page leads with the chart." },
+      { "name": "Transparency", "score": 8, "max": 10, "reason": "Sources are named." },
+      { "name": "Writing craft", "score": 8, "max": 10, "reason": "Sentences are specific." },
+      { "name": "People-first purpose", "score": 8, "max": 10, "reason": "A reader can use the chart." },
+      { "name": "Human voice", "score": 7, "max": 10, "reason": "It sounds like Ryan." }
     ],
     "info_gain": "A first-hand chart other pages do not have.",
     "ai_flags": ["The old opening used filler. It was rewritten from the game notes."]
@@ -74,7 +76,7 @@ The file is strict JSON. No comments and no trailing commas.
 }
 ```
 
-The nine categories total 50. Accuracy is scored from 0 to 10. The other eight are scored from 0 to 5, in this order: Information gain, Effort and replication cost, Originality, Experience and expertise, Main content and layout, Transparency, Writing craft, and People-first purpose.
+Every score is a whole number from 0 to 10. There are 10 categories, in this order: Accuracy, Information gain, Effort and replication cost, Originality, Experience and expertise, Main content and layout, Transparency, Writing craft, People-first purpose, and Human voice. Human voice is the written-by-AI check.
 
 | Field | Meaning |
 | --- | --- |
@@ -88,30 +90,31 @@ The nine categories total 50. Accuracy is scored from 0 to 10. The other eight a
 | `hero_image` | Repo path or absolute URL of the hero image. Also include that image in the HTML. |
 | `unique` | Two to four plain bullets on what makes this unique and hard to copy, such as our own data, original analysis, real photos, or first-hand reporting. Shown under the stars. Use `[]` when there is nothing unique yet. An empty list shows a red "Nothing unique yet" warning. |
 | `unverified` | Array of claims that are not checked. Use `[]` when every claim is checked. |
-| `scorecard.total` | Points earned out of `max`. A total of 45 out of 50 is 4.5 stars. |
-| `scorecard.max` | Scale for `total`. Use `50`. If it is omitted, the editor uses 50. |
-| `scorecard.grade` | `Ready`, `Needs work`, or `Rework`. The editor computes this from `total`. |
-| `scorecard.categories` | Nine items. Each has `name`, `score`, `max`, and `reason`. Accuracy uses `max` 10. The other eight use `max` 5. Information gain is one of these starred rows, and it also has the box under the stars. |
+| `scorecard.overall` | Whole number from 0 to 10. Shown as `Overall 8/10`. |
+| `scorecard.max` | Scale for the overall score. Use `10`. If it is omitted, the editor uses 10. |
+| `scorecard.stars` | Optional. The editor draws stars from `overall / 2`. A score of 8 is 4 stars. A score of 9 is 4.5 stars. Half stars appear only in the icons. The number stays a whole number. |
+| `scorecard.grade` | `Ready`, `Needs work`, or `Rework`. The editor computes this from the scores below. |
+| `scorecard.categories` | Ten items, each scored 0 to 10. Each has `name`, `score`, `max` (`10`), and `reason`. The panel shows `N/10` and the reason. |
 | `scorecard.info_gain` | One line on what this draft adds. Shown in the information-gain box under the stars, after the `unique` bullets. |
-| `scorecard.ai_flags` | Lines that read as AI-written, and how they were fixed. Use `[]` when none remain. |
+| `scorecard.ai_flags` | Lines that read as AI-written, and how they were fixed. Use `[]` when none remain. Shown in the Human voice box beside the information-gain box. |
 
 ### Score badge
 
-The inbox and the review screen show stars from `total / max * 5`, rounded to the nearest half star, plus the fraction (for example `4.5 stars` and `45/50`) and one badge. `max` defaults to 50.
+The inbox and the top of the review screen show `Overall N/10`, stars (`overall / 2`, half stars only in the icons), and one badge.
 
-| Badge | Color | When `max` is 50 |
+| Badge | Color | When |
 | --- | --- | --- |
-| Ready | Green | Total is 40 or higher |
-| Needs work | Amber | Total is 31 to 39 |
-| Rework | Red | Total is under 31 |
+| Ready | Green | Overall is 8 or higher, Accuracy is 9 or higher, Information gain is 6 or higher, and Human voice is 7 or higher |
+| Needs work | Amber | Overall is 6 or 7, or overall is 8 or higher but a Ready gate is missed |
+| Rework | Red | Overall is under 6 |
 
-If `max` is not 50, those cutoffs scale with it. 40/50 is Ready, and 31/50 is the bottom of Needs work. If `total` is missing, the badge is Needs work.
+If `overall` is missing, the badge is Needs work.
 
-Each category, including Information gain, shows `score/max`, stars (`score / max * 5`, nearest half star), and its one-line reason. The star icons use an accessible name such as `4.5 out of 5 stars`.
+Each category shows `N/10` and its one-line reason. The numbers are whole. The star icons use an accessible name such as `4 out of 5 stars`.
 
 ### Review screen
 
-The star rating sits at the top of the review screen. Directly under it, and above the article, a short box titled "Information gain: what makes this unique and hard to copy" lists the `unique` bullets and the `info_gain` line. If `unique` is empty, that box shows a red "Nothing unique yet" warning. The category scorecard stays on the same screen and includes Information gain as its own starred row. On a wide window it sits beside the article. On a phone it follows the article. The panel also shows "Human voice" (`ai_flags`) and the article `summary`. The inbox still shows the first sentence of `uniqueness.summary` under the title when that field is present.
+The star rating sits at the top of the review screen and in the inbox, as `Overall N/10` plus stars. Directly under the stars, two boxes sit side by side. "Information gain: what makes this unique and hard to copy" lists the `unique` bullets and the `info_gain` line. If `unique` is empty, that box shows a red "Nothing unique yet" warning. "Human voice" lists `scorecard.ai_flags`. The category scorecard stays on the same screen. On a wide window it sits beside the article. On a phone it follows the article. The panel also shows the article `summary`. The inbox still shows the first sentence of `uniqueness.summary` under the title when that field is present.
 
 ## Article HTML
 
