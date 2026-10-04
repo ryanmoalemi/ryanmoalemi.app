@@ -73,32 +73,110 @@
     return "https://" + host + path;
   }
 
-  function scoreRatio(scorecard) {
-    var sc = scorecard || {};
-    var total = Number(sc.total);
-    if (Number.isFinite(total)) return total / 100;
-    var cats = Array.isArray(sc.categories) ? sc.categories : [];
-    var max = 0;
-    var sum = 0;
-    cats.forEach(function (cat) {
-      max += Number(cat && cat.max) || 0;
-      sum += Number(cat && cat.score) || 0;
-    });
-    if (max > 0) return sum / max;
+  function scoreMax(scorecard) {
+    var max = Number(scorecard && scorecard.max);
+    if (Number.isFinite(max) && max > 0) return max;
+    return 10;
+  }
+
+  function overallScore(scorecard) {
+    if (!scorecard || scorecard.overall == null || scorecard.overall === "") return null;
+    var n = Number(scorecard.overall);
+    if (!Number.isFinite(n)) return null;
+    return Math.round(n);
+  }
+
+  function categoryScore(scorecard, name) {
+    var cats = scorecard && Array.isArray(scorecard.categories) ? scorecard.categories : [];
+    var want = String(name || "").toLowerCase();
+    for (var i = 0; i < cats.length; i++) {
+      var label = String(cats[i] && cats[i].name || "").toLowerCase().replace(/\s+/g, " ").trim();
+      if (label === want) {
+        var n = Number(cats[i].score);
+        return Number.isFinite(n) ? n : null;
+      }
+    }
     return null;
+  }
+
+  function starCount(score, max) {
+    var s = Number(score);
+    var m = Number(max);
+    if (!Number.isFinite(s)) return null;
+    if (!Number.isFinite(m) || m <= 0) m = 10;
+    var half = Math.round(((s / m) * 5) * 2) / 2;
+    if (half < 0) return 0;
+    if (half > 5) return 5;
+    return half;
+  }
+
+  function starLabel(count) {
+    if (count == null || !Number.isFinite(Number(count))) return "";
+    var n = Number(count);
+    var text = n % 1 === 0 ? String(n) : n.toFixed(1);
+    return text + " out of 5 stars";
   }
 
   function badgeFor(scorecard) {
     var sc = scorecard || {};
-    var grade = String(sc.grade || "").trim().toUpperCase();
-    if (grade.charAt(0) === "A") return { key: "ready", label: "Ready" };
-    if (grade.charAt(0) === "B") return { key: "needs-work", label: "Needs work" };
-    if (/^[CDF]/.test(grade)) return { key: "rework", label: "Rework" };
-    var ratio = scoreRatio(sc);
-    if (ratio == null) return { key: "needs-work", label: "Needs work" };
-    if (ratio >= 0.8) return { key: "ready", label: "Ready" };
-    if (ratio >= 0.6) return { key: "needs-work", label: "Needs work" };
-    return { key: "rework", label: "Rework" };
+    var overall = overallScore(sc);
+    if (overall == null) return { key: "needs-work", label: "Needs work" };
+    var accuracy = categoryScore(sc, "accuracy");
+    var info = categoryScore(sc, "information gain");
+    if (info == null) info = categoryScore(sc, "info gain");
+    var voice = categoryScore(sc, "human voice");
+    if (overall >= 8 && accuracy >= 9 && info >= 6 && voice >= 7) {
+      return { key: "ready", label: "Ready" };
+    }
+    if (overall < 6) return { key: "rework", label: "Rework" };
+    return { key: "needs-work", label: "Needs work" };
+  }
+
+  function stringList(value) {
+    var source = Array.isArray(value) ? value : (typeof value === "string" && value.trim() ? [value] : []);
+    return source.map(function (item) {
+      if (item == null) return "";
+      if (typeof item === "string" || typeof item === "number") return String(item).trim();
+      if (typeof item === "object") {
+        if (item.text) return String(item.text).trim();
+        if (item.summary) return String(item.summary).trim();
+        if (item.point) return String(item.point).trim();
+      }
+      return "";
+    }).filter(Boolean);
+  }
+
+  function uniquePoints(meta) {
+    var m = meta || {};
+    var points = stringList(m.unique);
+    if (points.length) return points;
+    if (m.uniqueness && typeof m.uniqueness === "object") return stringList(m.uniqueness.points);
+    return [];
+  }
+
+  function articleSummary(meta) {
+    var m = meta || {};
+    if (typeof m.summary === "string" && m.summary.trim()) return m.summary.trim();
+    if (m.uniqueness && typeof m.uniqueness.summary === "string") return String(m.uniqueness.summary).trim();
+    return "";
+  }
+
+  function firstSentence(text) {
+    var value = String(text || "").replace(/\s+/g, " ").trim();
+    if (!value) return "";
+    var parts = value.split(/(?<=[.!?])\s+/);
+    return parts[0];
+  }
+
+  function unverifiedList(meta) {
+    var m = meta || {};
+    var top = stringList(m.unverified);
+    if (top.length) return top;
+    return stringList(m.scorecard && m.scorecard.unverified);
+  }
+
+  function aiFlags(scorecard) {
+    return stringList(scorecard && scorecard.ai_flags);
   }
 
   function ageLabel(iso, now) {
@@ -374,8 +452,18 @@
     isExternalUrl: isExternalUrl,
     resolveRepoPath: resolveRepoPath,
     liveUrl: liveUrl,
+    scoreMax: scoreMax,
+    overallScore: overallScore,
+    categoryScore: categoryScore,
+    starCount: starCount,
+    starLabel: starLabel,
     badgeFor: badgeFor,
-    scoreRatio: scoreRatio,
+    stringList: stringList,
+    uniquePoints: uniquePoints,
+    articleSummary: articleSummary,
+    firstSentence: firstSentence,
+    unverifiedList: unverifiedList,
+    aiFlags: aiFlags,
     ageLabel: ageLabel,
     sortDrafts: sortDrafts,
     hasReviewLabel: hasReviewLabel,

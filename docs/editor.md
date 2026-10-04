@@ -37,51 +37,76 @@ The file is strict JSON. No comments and no trailing commas.
   "site": "ryanmoalemi.app",
   "title": "Article title",
   "meta_description": "One or two sentences for the meta description.",
+  "summary": "Two or three plain sentences that say what the article is about.",
   "url_path": "/notes/article-title/",
   "files": ["notes/article-title/index.html"],
   "hero_image": "notes/article-title/hero.jpg",
+  "unique": [
+    "Our own chart of Reese's rebounding by quarter",
+    "Ryan's first-hand card collection data"
+  ],
+  "unverified": [],
   "scorecard": {
-    "total": 86,
-    "grade": "A",
+    "overall": 8,
+    "max": 10,
+    "stars": 4,
+    "grade": "Ready",
     "categories": [
-      {
-        "name": "Clarity",
-        "score": 9,
-        "max": 10,
-        "reason": "The opening states the point."
-      }
+      { "name": "Accuracy", "score": 9, "max": 10, "reason": "The numbers match the source." },
+      { "name": "Information gain", "score": 6, "max": 10, "reason": "The chart is not on other sites." },
+      { "name": "Effort and replication cost", "score": 7, "max": 10, "reason": "The table took original logging." },
+      { "name": "Originality", "score": 7, "max": 10, "reason": "The angle is ours." },
+      { "name": "Experience and expertise", "score": 8, "max": 10, "reason": "Written from watching the games." },
+      { "name": "Main content and layout", "score": 8, "max": 10, "reason": "The page leads with the chart." },
+      { "name": "Transparency", "score": 8, "max": 10, "reason": "Sources are named." },
+      { "name": "Writing craft", "score": 8, "max": 10, "reason": "Sentences are specific." },
+      { "name": "People-first purpose", "score": 8, "max": 10, "reason": "A reader can use the chart." },
+      { "name": "Human voice", "score": 7, "max": 10, "reason": "It sounds like Ryan." }
     ],
-    "info_gain": "What this draft adds that a generic page would not.",
-    "unverified": ["Any claim that is not checked"]
+    "info_gain": "A first-hand chart other pages do not have.",
+    "ai_flags": ["The old opening used filler. It was rewritten from the game notes."]
   }
 }
 ```
+
+Every score is a whole number from 0 to 10. There are 10 categories, in this order: Accuracy, Information gain, Effort and replication cost, Originality, Experience and expertise, Main content and layout, Transparency, Writing craft, People-first purpose, and Human voice. Human voice is the written-by-AI check.
 
 | Field | Meaning |
 | --- | --- |
 | `site` | Hostname, such as `ryanmoalemi.com`. A full `https://` URL is also accepted. |
 | `title` | Article title. Ryan edits this on the page heading. |
 | `meta_description` | Meta description. Ryan edits it at the top of the preview. |
+| `summary` | Two or three plain sentences about the article. Shown in the scorecard and, as the first sentence, under the title in the inbox. |
 | `url_path` | Path on the live site. Start it with `/`. |
 | `files` | Repo paths of the article HTML documents. The editor opens the file that matches `url_path`, otherwise the first HTML file. |
 | `hero_image` | Repo path or absolute URL of the hero image. Also include that image in the HTML. |
-| `scorecard.total` | Number shown on the card, usually from 0 to 100. |
-| `scorecard.grade` | Letter grade. See the badge rules below. |
-| `scorecard.categories` | Each item has `name`, `score`, `max`, and `reason`. |
-| `scorecard.info_gain` | A string or number describing what the draft adds. |
-| `scorecard.unverified` | Array of strings. Use `[]` when every claim is checked. |
+| `unique` | Two to four short bullets on what makes the draft hard to copy. Use `[]` only when there is nothing unique yet. |
+| `unverified` | Array of claims that are not checked. Use `[]` when every claim is checked. |
+| `scorecard.overall` | Whole number from 0 to 10. Shown as `Overall 8/10`. |
+| `scorecard.max` | Scale for the overall score. Use `10`. |
+| `scorecard.stars` | Optional. The editor draws stars from `overall / 2`. A score of 8 is 4 stars. A score of 9 is 4.5 stars. Half stars appear only in the icons. |
+| `scorecard.grade` | `Ready`, `Needs work`, or `Rework`. The editor also computes this from the scores below. |
+| `scorecard.categories` | Each item has `name`, `score` (0 to 10), `max` (`10`), and `reason` (one line). |
+| `scorecard.info_gain` | One line on what this draft adds. Shown inside the information-gain box. |
+| `scorecard.ai_flags` | Lines that read as AI-written, and how they were fixed. Use `[]` when none remain. |
 
 ### Score badge
 
-The inbox and the side panel use one badge:
+The inbox and the review screen show stars, `Overall N/10`, and one badge:
 
 | Badge | Color | When |
 | --- | --- | --- |
-| Ready | Green | Grade starts with A, or there is no letter grade and `total` is 80 or higher |
-| Needs work | Amber | Grade starts with B, or there is no letter grade and `total` is 60 to 79 |
-| Rework | Red | Grade starts with C, D, or F, or there is no letter grade and `total` is below 60 |
+| Ready | Green | Overall is 8 or higher, Accuracy is 9 or higher, Information gain is 6 or higher, and Human voice is 7 or higher |
+| Needs work | Amber | Overall is 6 or 7, or overall is 8 or higher but a Ready gate is missed |
+| Rework | Red | Overall is under 6 |
 
-The letter grade wins when it is present. If `grade` is empty and `total` is missing, the editor uses the average of `categories` (score divided by max) with the same 80 and 60 cutoffs. If nothing is scored, the badge is Needs work.
+If `overall` is missing, the badge is Needs work.
+
+Each category shows `N/10`, stars (`score / 10 * 5`, nearest half star), and its reason.
+
+### Review screen
+
+The scorecard stays on the same screen as the editable article. On a wide window it sits beside the article. On a phone it stacks above the article. The top of the scorecard shows the overall score and stars, then two boxes side by side: "Information gain: what makes this unique and hard to copy" (the `unique` bullets plus the `info_gain` line) and "Human voice" (the `ai_flags`). An empty `unique` list shows a red "Nothing unique yet" warning. The article `summary` sits in that same panel.
 
 ## Article HTML
 

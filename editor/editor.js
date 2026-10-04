@@ -180,11 +180,77 @@
     return String(value);
   }
 
-  function badgeNode(badge, total) {
-    var kids = [];
-    if (total != null && total !== "") kids.push(el("span", { class: "badge-score" }, String(total)));
-    kids.push(badge.label);
-    return el("span", { class: "badge " + badge.key }, kids);
+  var starSeq = 0;
+  var STAR_PATH = "M12 2.2 14.7 8.6 21.6 9.2 16.4 13.8 18 20.6 12 17 6 20.6 7.6 13.8 2.4 9.2 9.3 8.6Z";
+
+  function svgEl(tag) {
+    return document.createElementNS("http://www.w3.org/2000/svg", tag);
+  }
+
+  function starSvg(state) {
+    starSeq += 1;
+    var svg = svgEl("svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("class", "star " + state);
+    svg.setAttribute("aria-hidden", "true");
+    if (state === "half") {
+      var id = "star-clip-" + starSeq;
+      var defs = svgEl("defs");
+      var clip = svgEl("clipPath");
+      clip.setAttribute("id", id);
+      var rect = svgEl("rect");
+      rect.setAttribute("x", "0");
+      rect.setAttribute("y", "0");
+      rect.setAttribute("width", "12");
+      rect.setAttribute("height", "24");
+      clip.append(rect);
+      defs.append(clip);
+      svg.append(defs);
+      var base = svgEl("path");
+      base.setAttribute("class", "base");
+      base.setAttribute("d", STAR_PATH);
+      var fill = svgEl("path");
+      fill.setAttribute("class", "fill");
+      fill.setAttribute("d", STAR_PATH);
+      fill.setAttribute("clip-path", "url(#" + id + ")");
+      svg.append(base, fill);
+      return svg;
+    }
+    var path = svgEl("path");
+    path.setAttribute("d", STAR_PATH);
+    svg.append(path);
+    return svg;
+  }
+
+  function starsNode(count) {
+    var label = lib.starLabel(count);
+    var wrap = el("span", { class: "stars", role: "img", "aria-label": label || "No score" });
+    var shown = count == null ? 0 : count;
+    for (var i = 0; i < 5; i++) {
+      var state = "empty";
+      if (shown >= i + 1) state = "full";
+      else if (shown >= i + 0.5) state = "half";
+      wrap.append(starSvg(state));
+    }
+    return wrap;
+  }
+
+  function badgeNode(badge) {
+    return el("span", { class: "badge " + (badge && badge.key || "missing") }, (badge && badge.label) || "No score");
+  }
+
+  function scoreBits(meta) {
+    var sc = (meta && meta.scorecard) || {};
+    var overall = lib.overallScore(sc);
+    if (overall == null) return null;
+    var max = lib.scoreMax(sc);
+    return {
+      overall: overall,
+      max: max,
+      stars: lib.starCount(overall, max),
+      badge: lib.badgeFor(sc),
+      text: "Overall " + overall + "/" + max
+    };
   }
 
   function setBanner(parent, message, kind) {
@@ -1058,12 +1124,18 @@
       ]));
     } else {
       state.drafts.forEach(function (draft) {
-        var total = draft.meta && draft.meta.scorecard ? draft.meta.scorecard.total : null;
+        var bits = draft.missing ? null : scoreBits(draft.meta);
+        var blurb = lib.firstSentence(lib.articleSummary(draft.meta));
         var button = el("button", { class: "draft-card", type: "button" }, [
           el("div", { class: "card-top" }, el("p", { class: "card-site" }, draft.site || draft.repo)),
-          el("div", { class: "card-title-row" }, [
-            el("h2", {}, draft.title || "Untitled draft"),
-            badgeNode(draft.badge || { key: "missing", label: "No score" }, draft.missing ? null : total)
+          el("h2", {}, draft.title || "Untitled draft"),
+          blurb ? el("p", { class: "card-summary" }, blurb) : null,
+          el("div", { class: "card-score" }, bits ? [
+            starsNode(bits.stars),
+            el("span", { class: "overall" }, bits.text),
+            badgeNode(bits.badge)
+          ] : [
+            badgeNode(draft.badge || { key: "missing", label: "No score" })
           ]),
           el("p", { class: "card-meta" }, [
             lib.ageLabel(draft.createdAt),
@@ -1122,39 +1194,57 @@
   }
 
   function scorecard(draft) {
-    var sc = (draft.meta && draft.meta.scorecard) || {};
-    var badge = lib.badgeFor(sc);
+    var meta = draft.meta || {};
+    var sc = meta.scorecard || {};
+    var bits = scoreBits(meta);
+    var badge = bits ? bits.badge : lib.badgeFor(sc);
     var cats = Array.isArray(sc.categories) ? sc.categories : [];
+    var points = lib.uniquePoints(meta);
+    var info = textOf(sc.info_gain);
+    var flags = lib.aiFlags(sc);
+    var summary = lib.articleSummary(meta);
+    var uniqueBox = el("section", { class: "callout" + (points.length ? "" : " warn") }, [
+      el("h3", {}, "Information gain: what makes this unique and hard to copy"),
+      points.length
+        ? el("ul", { class: "point-list" }, points.map(function (item) { return el("li", {}, item); }))
+        : el("p", { class: "warn-unique" }, "Nothing unique yet"),
+      info ? el("p", { class: "info-copy" }, info) : null
+    ]);
+    var voiceBox = el("section", { class: "callout" }, [
+      el("h3", {}, "Human voice"),
+      flags.length
+        ? el("ul", { class: "point-list" }, flags.map(function (item) { return el("li", {}, item); }))
+        : el("p", { class: "info-copy" }, "No lines flagged.")
+    ]);
     var blocks = [
       el("div", { class: "score-head" }, [
-        el("p", { class: "score-total" }, sc.total == null || sc.total === "" ? "n/a" : String(sc.total)),
-        el("p", { class: "score-grade" }, sc.grade || "")
+        el("p", { class: "score-total" }, bits ? bits.text : "Overall n/a"),
+        bits ? starsNode(bits.stars) : null,
+        badgeNode(badge)
+      ]),
+      el("div", { class: "gain-row" }, [uniqueBox, voiceBox]),
+      el("section", { class: "callout summary-box" }, [
+        el("h3", {}, "Summary"),
+        el("p", { class: summary ? "info-copy" : "info-copy" }, summary || "No summary yet.")
       ])
     ];
     cats.forEach(function (cat) {
-      var score = Number(cat && cat.score) || 0;
-      var max = Number(cat && cat.max) || 0;
-      var ratio = max > 0 ? score / max : 0;
-      var tone = ratio >= 0.8 ? "" : ratio >= 0.6 ? " mid" : " low";
-      var fill = el("span");
-      fill.style.width = Math.max(0, Math.min(100, ratio * 100)) + "%";
+      var score = Number(cat && cat.score);
+      var max = Number(cat && cat.max);
+      if (!Number.isFinite(max) || max <= 0) max = 10;
+      if (!Number.isFinite(score)) score = 0;
+      var whole = Math.round(score);
+      var stars = lib.starCount(whole, max);
       blocks.push(el("div", { class: "cat" }, [
         el("div", { class: "cat-top" }, [
           el("strong", {}, (cat && cat.name) || "Category"),
-          el("span", {}, max ? (score + "/" + max) : String(score))
+          el("span", { class: "cat-score" }, whole + "/" + max)
         ]),
-        el("div", { class: "bar" + tone }, fill),
+        starsNode(stars),
         cat && cat.reason ? el("p", { class: "reason" }, cat.reason) : null
       ]));
     });
-    var info = textOf(sc.info_gain);
-    if (info) {
-      blocks.push(el("div", { class: "score-block" }, [
-        el("h3", {}, "Info gain"),
-        el("p", { class: "info-copy" }, info)
-      ]));
-    }
-    var unverified = Array.isArray(sc.unverified) ? sc.unverified.map(textOf).filter(Boolean) : [];
+    var unverified = lib.unverifiedList(meta);
     if (unverified.length) {
       blocks.push(el("div", { class: "score-block" }, [
         el("h3", {}, "Unverified"),
@@ -1166,12 +1256,10 @@
       target: "_blank",
       rel: "noopener noreferrer"
     }, draft.repo + " #" + draft.number)));
-    var details = el("details", { class: "scorecard", id: "scorecard" }, [
-      el("summary", {}, [el("span", {}, "Scorecard"), badgeNode(badge, sc.total)]),
+    return el("aside", { class: "dashboard", id: "scorecard", "aria-label": "Scorecard" }, [
+      el("p", { class: "eyebrow" }, "Scorecard"),
       el("div", { class: "score-body" }, blocks)
     ]);
-    if (window.matchMedia("(min-width: 960px)").matches) details.open = true;
-    return details;
   }
 
   async function renderReview(route) {
@@ -1237,8 +1325,8 @@
       var srcdoc = await composePreview(session, active, html);
       if (state.screen !== "review") return;
       var grid = el("div", { class: "review-grid" }, [
-        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([frame])),
-        scorecard(draft)
+        scorecard(draft),
+        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([frame]))
       ]);
       var note = screen.querySelector(".muted");
       if (note) note.remove();

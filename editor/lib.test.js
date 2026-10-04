@@ -34,14 +34,40 @@ assert.strictEqual(lib.liveUrl("ryanmoalemi.app", "/drafts/morning-reset/"), "ht
 assert.strictEqual(lib.liveUrl("https://ryanmoalemi.com/", "notes/a"), "https://ryanmoalemi.com/notes/a");
 assert.strictEqual(lib.liveUrl("sandiegoadubuilder.com", ""), "https://sandiegoadubuilder.com/");
 
-assert.deepStrictEqual(lib.badgeFor({ grade: "A-", total: 10 }), { key: "ready", label: "Ready" });
-assert.deepStrictEqual(lib.badgeFor({ grade: "B", total: 95 }), { key: "needs-work", label: "Needs work" });
-assert.deepStrictEqual(lib.badgeFor({ grade: "C" }), { key: "rework", label: "Rework" });
-assert.deepStrictEqual(lib.badgeFor({ total: 80 }), { key: "ready", label: "Ready" });
-assert.deepStrictEqual(lib.badgeFor({ total: 79 }), { key: "needs-work", label: "Needs work" });
-assert.deepStrictEqual(lib.badgeFor({ total: 59 }), { key: "rework", label: "Rework" });
-assert.deepStrictEqual(lib.badgeFor({ categories: [{ score: 9, max: 10 }] }), { key: "ready", label: "Ready" });
+function card(overall, accuracy, info, voice) {
+  return {
+    overall: overall,
+    max: 10,
+    categories: [
+      { name: "Accuracy", score: accuracy, max: 10 },
+      { name: "Information gain", score: info, max: 10 },
+      { name: "Human voice", score: voice, max: 10 }
+    ]
+  };
+}
+assert.deepStrictEqual(lib.badgeFor(card(8, 9, 6, 7)), { key: "ready", label: "Ready" });
+assert.deepStrictEqual(lib.badgeFor(card(9, 10, 8, 9)), { key: "ready", label: "Ready" });
+assert.deepStrictEqual(lib.badgeFor(card(8, 8, 6, 7)), { key: "needs-work", label: "Needs work" });
+assert.deepStrictEqual(lib.badgeFor(card(8, 9, 5, 7)), { key: "needs-work", label: "Needs work" });
+assert.deepStrictEqual(lib.badgeFor(card(8, 9, 6, 6)), { key: "needs-work", label: "Needs work" });
+assert.deepStrictEqual(lib.badgeFor(card(7, 10, 10, 10)), { key: "needs-work", label: "Needs work" });
+assert.deepStrictEqual(lib.badgeFor(card(6, 9, 6, 7)), { key: "needs-work", label: "Needs work" });
+assert.deepStrictEqual(lib.badgeFor(card(5, 10, 10, 10)), { key: "rework", label: "Rework" });
 assert.deepStrictEqual(lib.badgeFor({}), { key: "needs-work", label: "Needs work" });
+assert.strictEqual(lib.overallScore({ overall: 8.4 }), 8);
+assert.strictEqual(lib.scoreMax({}), 10);
+assert.strictEqual(lib.scoreMax({ max: 10 }), 10);
+assert.strictEqual(lib.starCount(8, 10), 4);
+assert.strictEqual(lib.starCount(9, 10), 4.5);
+assert.strictEqual(lib.starCount(7, 10), 3.5);
+assert.strictEqual(lib.starCount(10, 10), 5);
+assert.strictEqual(lib.starLabel(4), "4 out of 5 stars");
+assert.strictEqual(lib.starLabel(4.5), "4.5 out of 5 stars");
+assert.strictEqual(lib.firstSentence("A quieter morning. The rest stays back."), "A quieter morning.");
+assert.deepStrictEqual(lib.uniquePoints({ unique: ["Our chart", ""] }), ["Our chart"]);
+assert.strictEqual(lib.articleSummary({ summary: " Two sentences. More. " }), "Two sentences. More.");
+assert.deepStrictEqual(lib.aiFlags({ ai_flags: ["Filler rewritten."] }), ["Filler rewritten."]);
+assert.deepStrictEqual(lib.unverifiedList({ unverified: ["A guess"] }), ["A guess"]);
 
 assert.strictEqual(lib.ageLabel("2026-10-04T11:59:30Z", now), "just now");
 assert.strictEqual(lib.ageLabel("2026-10-04T11:30:00Z", now), "30m ago");
