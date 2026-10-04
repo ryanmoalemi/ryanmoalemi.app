@@ -116,7 +116,7 @@ Each category shows `N/10` and its one-line reason. The numbers are whole. The s
 
 The review screen is one page. GitHub Pages hosts it, and the GitHub API is the only place drafts and edits are stored. On a wide window the post panel and scorecard sit beside the editable article. On a phone they stack above the article.
 
-The article opens as a block editor, using the site's own CSS. Each paragraph, heading, image, table, quote, list, card grid, and FAQ item is a block. Ryan does not see HTML unless he opens Advanced. He can click in a block and type. A + button or the / key opens a menu to insert a block. Each block has a toolbar with up and down arrows, a drag handle, Duplicate, and Delete. The formatting toolbar still has Bold, Italic, Underline, Heading 2, Heading 3, bullets, numbered lists, link, undo, redo, and clear formatting. Bold, italic, underline, and undo also work with Ctrl or Cmd plus B, I, U, and Z. New links open in a new tab unless he turns that off.
+The article opens as a block editor, using the site's own CSS. The editing view shows the article only, so the site header, menu, and footer do not cover the headline. Preview puts the full page back. On a narrow screen the site menu starts closed, and the Menu button opens it. Each paragraph, heading, image, table, quote, list, card grid, and FAQ item is a block. Ryan does not see HTML unless he opens Advanced. He can click in a block and type. A + button or the / key opens a menu to insert a block. Each block has a toolbar with up and down arrows, a drag handle, Duplicate, and Delete. The formatting toolbar still has Bold, Italic, Underline, Heading 2, Heading 3, bullets, numbered lists, link, undo, redo, and clear formatting. Bold, italic, underline, and undo also work with Ctrl or Cmd plus B, I, U, and Z. New links open in a new tab unless he turns that off.
 
 An image block can be replaced from his computer. The file is saved on the pull request branch as WebP, with width and height. The block has caption, credit, source link, and alt text fields. An empty credit leaves an existing caption alone.
 
@@ -126,7 +126,7 @@ FAQ blocks use the page's own FAQ markup. When the questions or answers change, 
 
 Show my edits highlights insertions and deletions against the original draft. Select text and choose Add note to leave a comment. Those notes are included when he sends the draft back.
 
-Edits are saved in this browser every few seconds. The page says Saved. Reloading restores them. Save draft, Approve & publish, and Send back with notes still commit to the pull request branch when the text, title, search description, slug, or featured image changed. Preview shows the rendered page with block controls hidden, and can switch between desktop and phone width. Revisions lists earlier commits on the branch. Restoring one loads it into the editor. The next Save draft commits it forward.
+Edits are saved in this browser every few seconds. The page says Saved. Reloading restores them. Save draft, Approve & publish, and Send back with notes still commit to the pull request branch when the text, title, search description, slug, or featured image changed. Preview shows the full page with block controls hidden, and can switch between desktop and phone width. The mobile menu starts closed there. Revisions lists earlier commits on the branch. Restoring one loads it into the editor. The next Save draft commits it forward.
 
 The dashboard shows `Overall N/10` and the stars, then two boxes side by side: "Information gain: what makes this unique and hard to copy" (`unique` bullets and the `info_gain` line) and "Human voice" (`scorecard.ai_flags`). If `unique` is empty, the information-gain box shows a red "Nothing unique yet" warning. Under those boxes it shows `summary`, two or three plain sentences, then each category as `N/10` with its reason.
 
@@ -140,7 +140,7 @@ Write a full HTML document.
 - Put the hero image in the document. `hero_image` is the repo path (or absolute URL) the editor uses to show the photo.
 - Put the readable copy in headings, paragraphs, list items, quotes, table cells, and figcaptions inside `article` or `main`.
 - The article body is editable, including the layout wrappers around the copy. Copy that lives only outside that body is not editable.
-- Do not depend on scripts for the reading view. Scripts stay in the file when Ryan saves, but the preview does not run them and they are not editable.
+- Do not depend on scripts for the reading view. Scripts stay in the file when Ryan saves, but the preview does not run them and they are not editable. A mobile menu that would sit open without its script starts closed, and the Menu button in Preview opens it.
 - Keep the visible title in an `h1`. Ryan's Title field updates that heading, the document `<title>` (a site suffix after the old title is kept), `og:title` when present, and `title` in the review JSON.
 - Keep `<meta name="description">` in the document. Ryan's Search description field updates that tag, `og:description` when present, and `meta_description` in the review JSON.
 - Keep figures, captions, tables, links, classes, and JSON-LD. The editor writes the article body back with the same tags and classes. Block controls are not saved. Anything outside the article body is left as it was.
@@ -162,7 +162,7 @@ Actions:
 | Button | Effect |
 | --- | --- |
 | Save draft | One commit on the pull request branch. The message is exactly `Ryan edits`. The commit updates the article HTML and, when the title, meta description, URL slug, or featured image changed, the review JSON. Before the commit, the editor checks that photos, photo credits, tables, links, and the hidden search summary are still present unless Ryan deleted them. FAQ questions may update the FAQPage summary. If the check fails, nothing is committed. |
-| Preview | Shows the rendered page as it will look live, with desktop and phone widths. |
+| Preview | Shows the full page as it will look live, with desktop and phone widths. The editing view stays on the article only. The mobile menu starts closed, and the Menu button opens it. |
 | Revisions | Lists earlier commits on the branch. Restore loads one into the editor. Save draft commits it forward. |
 | Approve & publish | Asks for confirmation, saves edits, squash-merges the pull request, then shows the live URL (`https://` + `site` + `url_path`). The same check runs before the save. A failed check does not merge. |
 | Send back with notes | Saves unsent edits, posts Ryan's note and any comments as a pull request comment, and adds the label `changes-requested`. |

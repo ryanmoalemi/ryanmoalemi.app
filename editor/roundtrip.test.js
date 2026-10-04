@@ -241,3 +241,53 @@ try {
 var webpResult = (String(webpDump).match(/data-result="([^"]+)"/) || [])[1] || "";
 if (webpResult.indexOf("PASS") !== 0) throw new Error("webp conversion failed: " + (webpResult || "no result"));
 console.log(webpResult);
+
+assert.ok(editorSrc.indexOf("body:not(.rm-preview)[data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]), body:not(.rm-preview) [data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]) { display: none !important; }") > -1);
+assert.ok(editorSrc.indexOf("body.rm-preview nav.site-nav:not(.is-open) > ul { display: none !important; }") > -1);
+assert.ok(editorSrc.indexOf("function bindSiteNav") > -1);
+var chromePage = "<!DOCTYPE html><meta charset=\"utf-8\"><style>" +
+  "body:not(.rm-preview)[data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]), body:not(.rm-preview) [data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]) { display: none !important; }" +
+  "@media (max-width: 900px) {" +
+  "body.rm-preview nav.site-nav:not(.is-open) > ul { display: none !important; }" +
+  "body.rm-preview nav.site-nav.is-open > ul { display: block !important; }" +
+  "}</style><body data-rm-keep>" +
+  "<div class=\"utility\">Utility</div>" +
+  "<header><nav class=\"site-nav\"><button type=\"button\" class=\"site-nav-toggle\">Menu</button><ul id=\"site-nav-menu\"><li>Home</li></ul></nav></header>" +
+  "<main data-rm-keep><nav class=\"breadcrumbs\">Crumb</nav><article data-rm-root><h1>Headline</h1></article></main>" +
+  "<footer>Foot</footer>" +
+  "<script>" +
+  "function show(el){return getComputedStyle(el).display;}" +
+  "var utility=document.querySelector('.utility');" +
+  "var header=document.querySelector('header');" +
+  "var crumb=document.querySelector('.breadcrumbs');" +
+  "var title=document.querySelector('h1');" +
+  "var menu=document.getElementById('site-nav-menu');" +
+  "var nav=document.querySelector('nav.site-nav');" +
+  "var edit=[show(utility),show(header),show(crumb),show(title)].join(',');" +
+  "document.body.classList.add('rm-preview');" +
+  "var preview=[show(header),show(title),show(menu)].join(',');" +
+  "nav.classList.add('is-open');" +
+  "var open=show(menu);" +
+  "var width=window.innerWidth;" +
+  "var ok=edit==='none,none,none,block' && preview==='block,block,none' && open==='block';" +
+  "document.documentElement.setAttribute('data-result', (ok ? 'PASS chrome ' : 'FAIL ') + edit + ' | ' + preview + ' | ' + open + ' | ' + width);" +
+  "</script>";
+var chromeFile = path.join(os.tmpdir(), "editor-chrome-test.html");
+fs.writeFileSync(chromeFile, chromePage);
+var chromeDump = "";
+try {
+  chromeDump = execFileSync("google-chrome", [
+    "--headless=new",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--window-size=390,844",
+    "--virtual-time-budget=2000",
+    "--dump-dom",
+    "file://" + chromeFile
+  ], { encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "ignore"] });
+} catch (err) {
+  chromeDump = err.stdout || "";
+}
+var chromeResult = (String(chromeDump).match(/data-result="([^"]+)"/) || [])[1] || "";
+if (chromeResult.indexOf("PASS") !== 0) throw new Error("article chrome test failed: " + (chromeResult || "no result"));
+console.log(chromeResult);
