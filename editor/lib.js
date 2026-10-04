@@ -196,18 +196,26 @@
     }).filter(Boolean);
   }
 
-  function uniquePoints(meta) {
+  function uniquenessBlock(meta) {
     var m = meta || {};
-    var points = stringList(m.unique);
-    if (points.length) return points;
-    if (m.uniqueness && typeof m.uniqueness === "object") return stringList(m.uniqueness.points);
-    return [];
+    var block = m.uniqueness;
+    var summary = "";
+    var points = [];
+    if (block && typeof block === "object" && !Array.isArray(block)) {
+      if (typeof block.summary === "string") summary = block.summary.trim();
+      points = stringList(block.points);
+    }
+    if (!points.length) points = stringList(m.unique);
+    return { summary: summary, points: points };
+  }
+
+  function uniquePoints(meta) {
+    return uniquenessBlock(meta).points;
   }
 
   function articleSummary(meta) {
     var m = meta || {};
     if (typeof m.summary === "string" && m.summary.trim()) return m.summary.trim();
-    if (m.uniqueness && typeof m.uniqueness.summary === "string") return String(m.uniqueness.summary).trim();
     return "";
   }
 
@@ -512,6 +520,7 @@
     starPhrase: starPhrase,
     badgeFor: badgeFor,
     stringList: stringList,
+    uniquenessBlock: uniquenessBlock,
     uniquePoints: uniquePoints,
     articleSummary: articleSummary,
     firstSentence: firstSentence,

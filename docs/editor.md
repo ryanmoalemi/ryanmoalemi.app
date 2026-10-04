@@ -38,6 +38,13 @@ The file is strict JSON. No comments and no trailing commas.
   "title": "Article title",
   "meta_description": "One or two sentences for the meta description.",
   "summary": "Two or three plain sentences that say what the article is about.",
+  "uniqueness": {
+    "summary": "The chart and the card notes are ours. A reader cannot get the same breakdown from a box score. The page says where each number came from.",
+    "points": [
+      "Our own chart of Reese's rebounding by quarter",
+      "Ryan's first-hand card collection data"
+    ]
+  },
   "url_path": "/notes/article-title/",
   "files": ["notes/article-title/index.html"],
   "hero_image": "notes/article-title/hero.jpg",
@@ -76,7 +83,8 @@ Every score is a whole number from 0 to 10. There are 10 categories, in this ord
 | `site` | Hostname, such as `ryanmoalemi.com`. A full `https://` URL is also accepted. |
 | `title` | Article title. Ryan edits this on the page heading. |
 | `meta_description` | Meta description. Ryan edits it at the top of the preview. |
-| `summary` | Two or three plain sentences about the article. Shown in the scorecard and, as the first sentence, under the title in the inbox. |
+| `summary` | Two or three plain sentences about the article. Shown in the scorecard. |
+| `uniqueness` | What makes the draft hard to copy. `summary` is two or three plain sentences. `points` is a list of short bullets. The review screen shows this in a highlighted box under the star rating and above the article. The inbox shows the first sentence of `uniqueness.summary` under the title. |
 | `url_path` | Path on the live site. Start it with `/`. |
 | `files` | Repo paths of the article HTML documents. The editor opens the file that matches `url_path`, otherwise the first HTML file. |
 | `hero_image` | Repo path or absolute URL of the hero image. Also include that image in the HTML. |
@@ -106,7 +114,7 @@ Each category shows `N/10` (or `score/max`), stars (`score / max * 5`, nearest h
 
 ### Review screen
 
-The scorecard stays on the same screen as the editable article. On a wide window it sits beside the article. On a phone it stacks above the article. The top of the scorecard shows the overall score and stars, then two boxes side by side: "Information gain: what makes this unique and hard to copy" (the `unique` bullets plus the `info_gain` line) and "Human voice" (the `ai_flags`). An empty `unique` list shows a red "Nothing unique yet" warning. The article `summary` sits in that same panel.
+The star rating sits at the top of the review screen. Directly under it, and above the article, a highlighted box titled "What makes this hard to copy" shows `uniqueness.summary` and `uniqueness.points`. The category scorecard stays on the same screen. On a wide window it sits beside the article. On a phone it follows the article. The panel also shows "Human voice" (`ai_flags`) and the article `summary`.
 
 ## Article HTML
 

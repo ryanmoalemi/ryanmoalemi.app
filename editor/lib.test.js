@@ -85,6 +85,18 @@ assert.deepStrictEqual(lib.badgeFor({ overall: 5, max: 10, grade: "Ready", categ
   { name: "Human voice", score: 10, max: 10 }
 ] }), { key: "rework", label: "Rework" });
 assert.strictEqual(lib.firstSentence("A quieter morning. The rest stays back."), "A quieter morning.");
+assert.deepStrictEqual(lib.uniquenessBlock({
+  uniqueness: {
+    summary: " The chart is ours. A box score does not have it. ",
+    points: ["Our own chart of Reese's rebounding by quarter", "Ryan's first-hand card collection data"]
+  }
+}), {
+  summary: "The chart is ours. A box score does not have it.",
+  points: ["Our own chart of Reese's rebounding by quarter", "Ryan's first-hand card collection data"]
+});
+assert.strictEqual(lib.firstSentence(lib.uniquenessBlock({
+  uniqueness: { summary: "The chart is ours. A box score does not have it." }
+}).summary), "The chart is ours.");
 assert.deepStrictEqual(lib.uniquePoints({ unique: ["Our chart", ""] }), ["Our chart"]);
 assert.strictEqual(lib.articleSummary({ summary: " Two sentences. More. " }), "Two sentences. More.");
 assert.deepStrictEqual(lib.aiFlags({ ai_flags: ["Filler rewritten."] }), ["Filler rewritten."]);

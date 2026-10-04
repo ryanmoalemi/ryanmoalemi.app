@@ -1134,7 +1134,8 @@
     } else {
       state.drafts.forEach(function (draft) {
         var bits = draft.missing ? null : scoreBits(draft.meta);
-        var blurb = lib.firstSentence(lib.articleSummary(draft.meta));
+        var hardToCopy = lib.uniquenessBlock(draft.meta);
+        var blurb = lib.firstSentence(hardToCopy.summary || lib.articleSummary(draft.meta));
         var button = el("button", { class: "draft-card", type: "button" }, [
           el("div", { class: "card-top" }, el("p", { class: "card-site" }, draft.site || draft.repo)),
           el("h2", {}, draft.title || "Untitled draft"),
@@ -1201,20 +1202,10 @@
   function scorecard(draft) {
     var meta = draft.meta || {};
     var sc = meta.scorecard || {};
-    var bits = scoreBits(meta);
-    var badge = bits ? bits.badge : lib.badgeFor(sc);
     var cats = Array.isArray(sc.categories) ? sc.categories : [];
-    var points = lib.uniquePoints(meta);
     var info = textOf(sc.info_gain);
     var flags = lib.aiFlags(sc);
     var summary = lib.articleSummary(meta);
-    var uniqueBox = el("section", { class: "callout" + (points.length ? "" : " warn") }, [
-      el("h3", {}, "Information gain: what makes this unique and hard to copy"),
-      points.length
-        ? el("ul", { class: "point-list" }, points.map(function (item) { return el("li", {}, item); }))
-        : el("p", { class: "warn-unique" }, "Nothing unique yet"),
-      info ? el("p", { class: "info-copy" }, info) : null
-    ]);
     var voiceBox = el("section", { class: "callout" }, [
       el("h3", {}, "Human voice"),
       flags.length
@@ -1222,15 +1213,15 @@
         : el("p", { class: "info-copy" }, "No lines flagged.")
     ]);
     var blocks = [
-      bits ? scoreRow(bits, true) : el("div", { class: "score-head" }, [
-        el("p", { class: "score-total" }, "No score"),
-        badgeNode(badge)
-      ]),
-      el("div", { class: "gain-row" }, [uniqueBox, voiceBox]),
+      voiceBox,
       el("section", { class: "callout summary-box" }, [
         el("h3", {}, "Summary"),
-        el("p", { class: summary ? "info-copy" : "info-copy" }, summary || "No summary yet.")
-      ])
+        el("p", { class: "info-copy" }, summary || "No summary yet.")
+      ]),
+      info ? el("div", { class: "score-block" }, [
+        el("h3", {}, "Info gain"),
+        el("p", { class: "info-copy" }, info)
+      ]) : null
     ];
     cats.forEach(function (cat) {
       var score = Number(cat && cat.score);
@@ -1263,10 +1254,33 @@
       target: "_blank",
       rel: "noopener noreferrer"
     }, draft.repo + " #" + draft.number)));
-    return el("aside", { class: "dashboard", id: "scorecard", "aria-label": "Scorecard" }, [
+    return el("aside", { class: "dashboard", "aria-label": "Scorecard" }, [
       el("p", { class: "eyebrow" }, "Scorecard"),
       el("div", { class: "score-body" }, blocks)
     ]);
+  }
+
+  function reviewLead(draft) {
+    var meta = draft.meta || {};
+    var bits = scoreBits(meta);
+    var block = lib.uniquenessBlock(meta);
+    var kids = [
+      bits ? scoreRow(bits, true) : el("div", { class: "score-head" }, [
+        el("p", { class: "score-total" }, "No score"),
+        badgeNode(lib.badgeFor(meta.scorecard))
+      ])
+    ];
+    if (block.summary || block.points.length) {
+      var box = [el("h2", {}, "What makes this hard to copy")];
+      if (block.summary) box.push(el("p", {}, block.summary));
+      if (block.points.length) {
+        box.push(el("ul", { class: "point-list" }, block.points.map(function (item) {
+          return el("li", {}, item);
+        })));
+      }
+      kids.push(el("section", { class: "uniqueness", id: "uniqueness" }, box));
+    }
+    return el("section", { class: "review-lead" }, kids);
   }
 
   async function renderReview(route) {
@@ -1332,12 +1346,12 @@
       var srcdoc = await composePreview(session, active, html);
       if (state.screen !== "review") return;
       var grid = el("div", { class: "review-grid" }, [
-        scorecard(draft),
-        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([frame]))
+        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([frame])),
+        scorecard(draft)
       ]);
       var note = screen.querySelector(".muted");
       if (note) note.remove();
-      screen.append(grid);
+      screen.append(reviewLead(draft), grid);
       if (session.warnings.length) {
         screen.append(el("ul", { class: "warnings" }, session.warnings.map(function (item) {
           return el("li", {}, item);
