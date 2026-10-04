@@ -95,14 +95,27 @@
 
   function pointsScore(scorecard) {
     var sc = scorecard || {};
+    if (sc.total != null && sc.total !== "") {
+      var total = Number(sc.total);
+      if (Number.isFinite(total)) {
+        var max = Number(sc.max);
+        if (!Number.isFinite(max) || max <= 0) max = 50;
+        return { score: total, max: max, kind: "total" };
+      }
+    }
     var overall = overallScore(sc);
     if (overall != null) return { score: overall, max: scoreMax(sc), kind: "overall" };
-    if (sc.total == null || sc.total === "") return null;
-    var total = Number(sc.total);
-    if (!Number.isFinite(total)) return null;
-    var max = Number(sc.max);
-    if (!Number.isFinite(max) || max <= 0) max = 45;
-    return { score: total, max: max, kind: "total" };
+    return null;
+  }
+
+  function badgeFromTotal(score, max) {
+    var scale = Number(max);
+    if (!Number.isFinite(scale) || scale <= 0) scale = 50;
+    var readyAt = 40 * (scale / 50);
+    var workAt = 31 * (scale / 50);
+    if (score + 1e-9 >= readyAt) return { key: "ready", label: "Ready" };
+    if (score + 1e-9 >= workAt) return { key: "needs-work", label: "Needs work" };
+    return { key: "rework", label: "Rework" };
   }
 
   function categoryScore(scorecard, name) {
@@ -160,16 +173,13 @@
 
   function badgeFor(scorecard) {
     var sc = scorecard || {};
+    var points = pointsScore(sc);
+    if (points && points.kind === "total") return badgeFromTotal(points.score, points.max);
     var overall = overallScore(sc);
     if (overall == null) {
       var named = gradeBadge(sc);
       if (named) return named;
-      var points = pointsScore(sc);
-      if (!points) return { key: "needs-work", label: "Needs work" };
-      var ratio = points.score / points.max;
-      if (ratio >= 0.8) return { key: "ready", label: "Ready" };
-      if (ratio >= 0.6) return { key: "needs-work", label: "Needs work" };
-      return { key: "rework", label: "Rework" };
+      return { key: "needs-work", label: "Needs work" };
     }
     var accuracy = categoryScore(sc, "accuracy");
     var info = categoryScore(sc, "information gain");
