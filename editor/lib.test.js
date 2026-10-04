@@ -157,6 +157,20 @@ var htmlSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 });
 assert.ok(editorSrc.indexOf("Information gain: what makes this unique and hard to copy") > -1);
 assert.ok(editorSrc.indexOf("Nothing unique yet") > -1);
+assert.strictEqual(editorSrc.indexOf("var show ="), -1, "local show shadows function show()");
+assert.ok(/function show\(/.test(editorSrc));
+var signinSrc = editorSrc.slice(editorSrc.indexOf("function renderSignin"), editorSrc.indexOf("function renderInbox"));
+assert.strictEqual(/\bvar\s+show\b/.test(signinSrc), false, "signin block shadows show()");
+assert.ok(signinSrc.indexOf("var showBtn") > -1);
+assert.ok((signinSrc.match(/\bshowBtn\b/g) || []).length >= 4);
+var storedAt = signinSrc.indexOf("writeStoredToken(next)");
+assert.ok(storedAt > signinSrc.indexOf("await assertToken()"));
+assert.ok(signinSrc.indexOf("show()", storedAt) > storedAt);
+assert.ok(signinSrc.indexOf("clearStoredToken()", storedAt) > storedAt);
+var bootSrc = editorSrc.slice(editorSrc.indexOf("async function boot"));
+assert.strictEqual(bootSrc.indexOf("Checking the saved token"), -1);
+assert.ok(bootSrc.indexOf("show()") < bootSrc.indexOf("await assertToken()"));
+assert.ok(bootSrc.indexOf("clearStoredToken()") > bootSrc.indexOf("await assertToken()"));
 assert.ok(htmlSrc.indexOf('content="noindex"') > -1, "missing noindex");
 assert.ok(htmlSrc.indexOf("connect-src https://api.github.com") > -1);
 assert.strictEqual((editorSrc.match(/fetch\s*\(/g) || []).length, 1);
@@ -230,3 +244,61 @@ if (result !== "PASS") {
   throw new Error("DOM tests failed: " + (result || "no result"));
 }
 console.log("dom tests passed");
+
+function chromeDump(file) {
+  var dump = "";
+  try {
+    dump = execFileSync("google-chrome", [
+      "--headless=new",
+      "--disable-gpu",
+      "--no-sandbox",
+      "--virtual-time-budget=4000",
+      "--dump-dom",
+      "file://" + file
+    ], { encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "ignore"] });
+  } catch (err) {
+    dump = err.stdout || "";
+    if (String(dump).indexOf('data-result="PASS"') === -1) throw err;
+  }
+  return (String(dump).match(/data-result="([^"]+)"/) || [])[1] || "";
+}
+
+function flowPage(setup, after) {
+  return "<!DOCTYPE html><meta charset=\"utf-8\"><title>flow</title><div id=\"app\"></div><script>" +
+    setup +
+    "</script><script>" +
+    libSrc +
+    "</script><script>" +
+    editorSrc +
+    "</script><script>" +
+    after +
+    "</script>";
+}
+
+var fetchOk = "window.fetch=function(url){var href=String(url);var body=href.indexOf('/pulls')!==-1?'[]':'{}';return Promise.resolve(new Response(body,{status:200,headers:{'Content-Type':'application/json'}}));};";
+var submitFile = path.join(os.tmpdir(), "editor-submit-test.html");
+fs.writeFileSync(submitFile, flowPage(
+  "localStorage.removeItem('rm-editor-token');" + fetchOk,
+  "var input=document.getElementById('token');input.value='github_pat_formcheck';document.querySelector('form.token-form').requestSubmit();var tries=0;function check(){tries+=1;var h1=document.querySelector('h1');var banner=document.querySelector('.banner');var stored=localStorage.getItem('rm-editor-token');var form=document.querySelector('form.token-form');if(h1&&h1.textContent==='Drafts'&&stored==='github_pat_formcheck'&&!form){document.documentElement.setAttribute('data-result','PASS');return;}if(banner&&/not a function|rejected|GitHub API/i.test(banner.textContent)){document.documentElement.setAttribute('data-result','FAIL '+banner.textContent);return;}if(tries>50){document.documentElement.setAttribute('data-result','FAIL '+(banner?banner.textContent:(h1&&h1.textContent)||'timeout'));return;}setTimeout(check,40);}setTimeout(check,20);"
+));
+var submitResult = chromeDump(submitFile);
+if (submitResult !== "PASS") throw new Error("token submit did not open the inbox: " + (submitResult || "no result"));
+console.log("submit test passed");
+
+var bootFile = path.join(os.tmpdir(), "editor-boot-test.html");
+fs.writeFileSync(bootFile, flowPage(
+  "localStorage.setItem('rm-editor-token','github_pat_bootcheck');" + fetchOk,
+  "var form=document.querySelector('form.token-form');var h1=document.querySelector('h1');var banner=document.querySelector('.banner');var text=banner?banner.textContent:'';var ok=!form&&h1&&h1.textContent==='Drafts'&&text.indexOf('Checking the saved token')===-1;document.documentElement.setAttribute('data-result',ok?'PASS':'FAIL '+(text||(h1&&h1.textContent)||'no inbox'));"
+));
+var bootResult = chromeDump(bootFile);
+if (bootResult !== "PASS") throw new Error("saved token did not open the inbox: " + (bootResult || "no result"));
+console.log("boot test passed");
+
+var rejectFile = path.join(os.tmpdir(), "editor-reject-test.html");
+fs.writeFileSync(rejectFile, flowPage(
+  "localStorage.removeItem('rm-editor-token');window.fetch=function(){return Promise.resolve(new Response(JSON.stringify({message:'Bad credentials'}),{status:401,headers:{'Content-Type':'application/json'}}));};",
+  "var input=document.getElementById('token');input.value='github_pat_rejected';document.querySelector('form.token-form').requestSubmit();var tries=0;function check(){tries+=1;var banner=document.querySelector('.banner');var stored=localStorage.getItem('rm-editor-token');var form=document.querySelector('form.token-form');if(form&&banner&&/rejected/i.test(banner.textContent)&&!stored){document.documentElement.setAttribute('data-result','PASS');return;}if(tries>50){document.documentElement.setAttribute('data-result','FAIL stored='+stored+' '+(banner?banner.textContent:'no banner'));return;}setTimeout(check,40);}setTimeout(check,20);"
+));
+var rejectResult = chromeDump(rejectFile);
+if (rejectResult !== "PASS") throw new Error("rejected token was stored: " + (rejectResult || "no result"));
+console.log("reject test passed");
