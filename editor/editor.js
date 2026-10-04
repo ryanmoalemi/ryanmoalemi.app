@@ -22,7 +22,7 @@
 
   var PREVIEW_CSS = [
     "#rm-mount, .ProseMirror { min-height: 8rem; }",
-    ".ProseMirror { outline: none; }",
+    ".ProseMirror { outline: none; white-space: pre-wrap; }",
     ".ProseMirror:focus { outline: none; }",
     ".rm-ins { background: rgba(70, 180, 90, 0.28); border-radius: 2px; }",
     ".rm-del { background: rgba(210, 50, 50, 0.2); text-decoration: line-through; border-radius: 2px; }",
