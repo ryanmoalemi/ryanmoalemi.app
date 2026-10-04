@@ -1266,7 +1266,7 @@
         badgeNode(lib.badgeFor(meta.scorecard))
       ])
     ];
-    var box = [el("h2", {}, "What makes this unique and hard to copy")];
+    var box = [el("h2", {}, "Information gain: what makes this unique and hard to copy")];
     if (points.length) {
       box.push(el("ul", { class: "point-list" }, points.map(function (item) {
         return el("li", {}, item);

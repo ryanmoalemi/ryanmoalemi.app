@@ -160,7 +160,7 @@ var htmlSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
   assert.strictEqual(/ghs_[A-Za-z0-9]{20,}/.test(src), false);
   assert.strictEqual(src.indexOf("\u2014"), -1);
 });
-assert.ok(editorSrc.indexOf("What makes this unique and hard to copy") > -1);
+assert.ok(editorSrc.indexOf("Information gain: what makes this unique and hard to copy") > -1);
 assert.ok(editorSrc.indexOf("Nothing unique yet") > -1);
 assert.ok(htmlSrc.indexOf('content="noindex"') > -1, "missing noindex");
 assert.ok(htmlSrc.indexOf("connect-src https://api.github.com") > -1);

@@ -114,7 +114,7 @@ Each category shows `N/10` (or `score/max`), stars (`score / max * 5`, nearest h
 
 ### Review screen
 
-The star rating sits at the top of the review screen. Directly under it, and above the article, a short box titled "What makes this unique and hard to copy" lists the `unique` bullets and the `info_gain` line. If `unique` is empty, that box shows a red "Nothing unique yet" warning. The category scorecard stays on the same screen. On a wide window it sits beside the article. On a phone it follows the article. The panel also shows "Human voice" (`ai_flags`) and the article `summary`. The inbox still shows the first sentence of `uniqueness.summary` under the title when that field is present.
+The star rating sits at the top of the review screen. Directly under it, and above the article, a short box titled "Information gain: what makes this unique and hard to copy" lists the `unique` bullets and the `info_gain` line. If `unique` is empty, that box shows a red "Nothing unique yet" warning. The category scorecard stays on the same screen. On a wide window it sits beside the article. On a phone it follows the article. The panel also shows "Human voice" (`ai_flags`) and the article `summary`. The inbox still shows the first sentence of `uniqueness.summary` under the title when that field is present.
 
 ## Article HTML
 
