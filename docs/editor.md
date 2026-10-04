@@ -83,8 +83,8 @@ Every score is a whole number from 0 to 10. There are 10 categories, in this ord
 | `site` | Hostname, such as `ryanmoalemi.com`. A full `https://` URL is also accepted. |
 | `title` | Article title. Ryan edits this on the page heading. |
 | `meta_description` | Meta description. Ryan edits it at the top of the preview. |
-| `summary` | Two or three plain sentences about the article. Shown in the scorecard. |
-| `uniqueness` | What makes the draft hard to copy. `summary` is two or three plain sentences. `points` is a list of short bullets. The review screen shows this in a highlighted box under the star rating and above the article. The inbox shows the first sentence of `uniqueness.summary` under the title. |
+| `summary` | Two or three plain sentences about the article. Shown in the same dashboard as the scores, stars, information-gain box, and human-voice flags. |
+| `uniqueness` | Optional longer note. `summary` is two or three plain sentences. `points` is a list of short bullets. The inbox shows the first sentence of `uniqueness.summary` under the title. The dashboard boxes use `unique` and `scorecard.info_gain`. |
 | `url_path` | Path on the live site. Start it with `/`. |
 | `files` | Repo paths of the article HTML documents. The editor opens the file that matches `url_path`, otherwise the first HTML file. |
 | `hero_image` | Repo path or absolute URL of the hero image. Also include that image in the HTML. |
@@ -114,7 +114,11 @@ Each category shows `N/10` and its one-line reason. The numbers are whole. The s
 
 ### Review screen
 
-The star rating sits at the top of the review screen and in the inbox, as `Overall N/10` plus stars. Directly under the stars, two boxes sit side by side. "Information gain: what makes this unique and hard to copy" lists the `unique` bullets and the `info_gain` line. If `unique` is empty, that box shows a red "Nothing unique yet" warning. "Human voice" lists `scorecard.ai_flags`. The category scorecard stays on the same screen. On a wide window it sits beside the article. On a phone it follows the article. The panel also shows the article `summary`. The inbox still shows the first sentence of `uniqueness.summary` under the title when that field is present.
+The review screen is one page. GitHub Pages hosts it, and the GitHub API is the only place drafts and edits are stored. On a wide window the dashboard sits beside the editable article. On a phone the dashboard stacks above the article.
+
+The dashboard shows `Overall N/10` and the stars, then two boxes side by side: "Information gain: what makes this unique and hard to copy" (`unique` bullets and the `info_gain` line) and "Human voice" (`scorecard.ai_flags`). If `unique` is empty, the information-gain box shows a red "Nothing unique yet" warning. Under those boxes it shows `summary`, two or three plain sentences, then each category as `N/10` with its reason.
+
+The inbox shows the same `Overall N/10`, stars, and grade, plus the first sentence of `uniqueness.summary` under the title when that field is present.
 
 ## Article HTML
 

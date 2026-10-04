@@ -1202,9 +1202,36 @@
   function scorecard(draft) {
     var meta = draft.meta || {};
     var sc = meta.scorecard || {};
-    var cats = Array.isArray(sc.categories) ? sc.categories : [];
+    var bits = scoreBits(meta);
+    var points = lib.stringList(meta.unique);
+    var info = textOf(sc.info_gain);
+    var flags = lib.aiFlags(sc);
     var summary = lib.articleSummary(meta);
+    var cats = Array.isArray(sc.categories) ? sc.categories : [];
+    var gain = [el("h2", {}, "Information gain: what makes this unique and hard to copy")];
+    if (points.length) {
+      gain.push(el("ul", { class: "point-list" }, points.map(function (item) {
+        return el("li", {}, item);
+      })));
+    } else {
+      gain.push(el("p", { class: "warn-unique" }, "Nothing unique yet"));
+    }
+    if (info) gain.push(el("p", { class: "info-copy" }, info));
+    var voice = [
+      el("h2", {}, "Human voice"),
+      flags.length
+        ? el("ul", { class: "point-list" }, flags.map(function (item) { return el("li", {}, item); }))
+        : el("p", { class: "info-copy" }, "No lines flagged.")
+    ];
     var blocks = [
+      bits ? scoreRow(bits, true) : el("div", { class: "score-head" }, [
+        el("p", { class: "score-total" }, "No score"),
+        badgeNode(lib.badgeFor(sc))
+      ]),
+      el("div", { class: "gain-row" }, [
+        el("section", { class: "uniqueness" + (points.length ? "" : " warn"), id: "uniqueness" }, gain),
+        el("section", { class: "uniqueness voice", id: "human-voice" }, voice)
+      ]),
       el("section", { class: "callout summary-box" }, [
         el("h3", {}, "Summary"),
         el("p", { class: "info-copy" }, summary || "No summary yet.")
@@ -1237,41 +1264,6 @@
       el("p", { class: "eyebrow" }, "Scorecard"),
       el("div", { class: "score-body" }, blocks)
     ]);
-  }
-
-  function reviewLead(draft) {
-    var meta = draft.meta || {};
-    var bits = scoreBits(meta);
-    var sc = meta.scorecard || {};
-    var points = lib.stringList(meta.unique);
-    var info = textOf(sc.info_gain);
-    var flags = lib.aiFlags(sc);
-    var kids = [
-      bits ? scoreRow(bits, true) : el("div", { class: "score-head" }, [
-        el("p", { class: "score-total" }, "No score"),
-        badgeNode(lib.badgeFor(sc))
-      ])
-    ];
-    var box = [el("h2", {}, "Information gain: what makes this unique and hard to copy")];
-    if (points.length) {
-      box.push(el("ul", { class: "point-list" }, points.map(function (item) {
-        return el("li", {}, item);
-      })));
-    } else {
-      box.push(el("p", { class: "warn-unique" }, "Nothing unique yet"));
-    }
-    if (info) box.push(el("p", { class: "info-copy" }, info));
-    var voice = [
-      el("h2", {}, "Human voice"),
-      flags.length
-        ? el("ul", { class: "point-list" }, flags.map(function (item) { return el("li", {}, item); }))
-        : el("p", { class: "info-copy" }, "No lines flagged.")
-    ];
-    kids.push(el("div", { class: "gain-row" }, [
-      el("section", { class: "uniqueness" + (points.length ? "" : " warn"), id: "uniqueness" }, box),
-      el("section", { class: "uniqueness voice", id: "human-voice" }, voice)
-    ]));
-    return el("section", { class: "review-lead" }, kids);
   }
 
   async function renderReview(route) {
@@ -1337,12 +1329,12 @@
       var srcdoc = await composePreview(session, active, html);
       if (state.screen !== "review") return;
       var grid = el("div", { class: "review-grid" }, [
-        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([frame])),
-        scorecard(draft)
+        scorecard(draft),
+        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([frame]))
       ]);
       var note = screen.querySelector(".muted");
       if (note) note.remove();
-      screen.append(reviewLead(draft), grid);
+      screen.append(grid);
       if (session.warnings.length) {
         screen.append(el("ul", { class: "warnings" }, session.warnings.map(function (item) {
           return el("li", {}, item);
