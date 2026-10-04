@@ -16,6 +16,7 @@
   };
   var session = null;
   var inboxLoaded = false;
+  var inboxGeneration = 0;
   var ignoreHash = false;
   var lock = false;
 
@@ -350,6 +351,7 @@
   }
 
   async function refreshInbox() {
+    var generation = ++inboxGeneration;
     state.loading = true;
     state.error = "";
     if (state.screen === "inbox") renderInbox();
@@ -369,11 +371,15 @@
         return [];
       }
     }));
+    if (generation !== inboxGeneration || state.screen !== "inbox") {
+      if (generation === inboxGeneration) state.loading = false;
+      return;
+    }
     state.drafts = lib.sortDrafts([].concat.apply([], groups));
     state.warnings = warnings;
     state.loading = false;
     inboxLoaded = true;
-    if (state.screen === "inbox") renderInbox();
+    renderInbox();
   }
 
   async function ensureDraft(route) {
@@ -1015,7 +1021,9 @@
     token = "";
     state.dirty = false;
     state.drafts = [];
+    state.loading = false;
     inboxLoaded = false;
+    inboxGeneration += 1;
     clearStoredToken();
     revokeSession();
     location.hash = "#/";
@@ -1045,15 +1053,15 @@
       placeholder: "github_pat_…",
       "aria-label": "GitHub token"
     });
-    var show = el("button", { class: "show-token", type: "button" }, "Show");
-    show.addEventListener("click", function () {
+    var showBtn = el("button", { class: "show-token", type: "button" }, "Show");
+    showBtn.addEventListener("click", function () {
       var hidden = input.type === "password";
       input.type = hidden ? "text" : "password";
-      show.textContent = hidden ? "Hide" : "Show";
+      showBtn.textContent = hidden ? "Hide" : "Show";
     });
     form.append(
       el("label", { class: "field-label", for: "token" }, "GitHub token"),
-      el("div", { class: "token-row" }, [input, show]),
+      el("div", { class: "token-row" }, [input, showBtn]),
       el("button", { class: "btn primary wide", type: "submit" }, "Continue")
     );
     form.addEventListener("submit", async function (event) {
@@ -1070,11 +1078,21 @@
       setBanner(shell, "Checking the token…", "ok");
       try {
         await assertToken();
-        writeStoredToken(next);
-        show();
       } catch (err) {
         token = "";
         setBanner(shell, err.message, "err");
+        return;
+      }
+      writeStoredToken(next);
+      try {
+        show();
+      } catch (err) {
+        token = "";
+        state.loading = false;
+        inboxLoaded = false;
+        inboxGeneration += 1;
+        clearStoredToken();
+        renderSignin(err.message);
       }
     });
     var repos = el("ul");
@@ -1187,14 +1205,14 @@
       refreshInbox().catch(function (err) {
         state.loading = false;
         state.error = err.message;
-        renderInbox();
+        if (state.screen === "inbox") renderInbox();
       });
     });
     if (!inboxLoaded && !state.loading) {
       refreshInbox().catch(function (err) {
         state.loading = false;
         state.error = err.message;
-        renderInbox();
+        if (state.screen === "inbox") renderInbox();
       });
     }
   }
@@ -1443,13 +1461,15 @@
       return;
     }
     token = stored;
-    renderSignin("");
-    setBanner(app.querySelector(".shell"), "Checking the saved token…", "ok");
+    show();
     try {
       await assertToken();
-      show();
     } catch (err) {
       token = "";
+      state.loading = false;
+      state.drafts = [];
+      inboxLoaded = false;
+      inboxGeneration += 1;
       clearStoredToken();
       renderSignin(err.message);
     }
