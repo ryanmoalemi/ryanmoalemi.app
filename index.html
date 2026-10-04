@@ -6,10 +6,11 @@
   <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-9SM4F411VZ');</script>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ryan Moalemi — Apps</title>
+  <title>Ryan Moalemi | Apps</title>
   <meta name="description" content="Free apps and experiments by Ryan Moalemi.">
-  <meta property="og:title" content="Ryan Moalemi — Apps">
+  <meta property="og:title" content="Ryan Moalemi | Apps">
   <meta property="og:description" content="Free apps and experiments by Ryan Moalemi.">
+  <meta name="twitter:title" content="Ryan Moalemi | Apps">
   <meta property="og:url" content="https://ryanmoalemi.app/">
   <meta property="og:type" content="website">
   <link rel="canonical" href="https://ryanmoalemi.app/">
@@ -47,12 +48,7 @@
       <p class="eyebrow">Apps &amp; experiments</p>
       <div class="hero-heading">
         <img class="portrait" src="assets/ryan-moalemi.jpg" alt="Ryan Moalemi" width="88" height="88" loading="eager">
-        <h1 aria-label="Hi, I’m Ryan Moalemi.">
-          <span class="typewrite" aria-hidden="true">
-            <span class="typewrite-ghost">Hi, I’m <span class="accent">Ryan Moalemi</span>.<span class="typewrite-cursor typewrite-cursor-reserve">|</span></span>
-            <span class="typewrite-row"><span class="typewrite-text"></span><span class="typewrite-cursor">|</span></span>
-          </span>
-        </h1>
+        <h1><span class="typewrite"><span class="typewrite-ghost">Hi, I’m <span class="accent">Ryan Moalemi</span>.<span class="typewrite-cursor typewrite-cursor-reserve" aria-hidden="true"></span></span><span class="typewrite-row" aria-hidden="true"><span class="typewrite-text"></span><span class="typewrite-cursor" aria-hidden="true"></span></span></span></h1>
         <script>
           (function () {
             var root = document.querySelector(".typewrite");
@@ -62,19 +58,20 @@
             var nameAt = full.indexOf("Ryan Moalemi");
             var nameEnd = nameAt + "Ryan Moalemi".length;
             var i = 0;
+            function chunk(value, accent) {
+              var el = document.createElement("span");
+              if (accent) el.className = "accent";
+              el.setAttribute("data-ch", value);
+              return el;
+            }
             function paint() {
               var before = full.slice(0, Math.min(i, nameAt));
               var mid = i > nameAt ? full.slice(nameAt, Math.min(i, nameEnd)) : "";
               var after = i > nameEnd ? full.slice(nameEnd, i) : "";
               text.replaceChildren();
-              if (before) text.append(document.createTextNode(before));
-              if (mid) {
-                var em = document.createElement("span");
-                em.className = "accent";
-                em.textContent = mid;
-                text.append(em);
-              }
-              if (after) text.append(document.createTextNode(after));
+              if (before) text.append(chunk(before, false));
+              if (mid) text.append(chunk(mid, true));
+              if (after) text.append(chunk(after, false));
             }
             function tick() {
               if (i >= full.length) return;
@@ -111,18 +108,6 @@
             <span class="app-arrow" aria-hidden="true">→</span>
           </a>
         </li>
-        <!-- Add apps as list items:
-        <li>
-          <a class="app-card" href="https://example.com">
-            <span class="app-icon" aria-hidden="true">01</span>
-            <span class="app-body">
-              <span class="app-name">App name</span>
-              <span class="app-desc">One-line description.</span>
-            </span>
-            <span class="app-arrow" aria-hidden="true">→</span>
-          </a>
-        </li>
-        -->
       </ul>
 
       <div class="empty" id="apps-empty">

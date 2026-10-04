@@ -168,7 +168,10 @@ html.type-on .typewrite-ghost,
 html.type-on .typewrite-row {
   grid-area: 1 / 1;
 }
-html.type-on .typewrite-ghost { visibility: hidden; }
+html.type-on .typewrite-ghost,
+html.type-on .typewrite-ghost .accent {
+  color: transparent;
+}
 html.type-on .typewrite-cursor-reserve {
   display: inline;
   visibility: hidden;
@@ -177,6 +180,14 @@ html.type-on .typewrite-row {
   display: block;
   align-self: start;
   justify-self: stretch;
+}
+
+.typewrite-text [data-ch]::before {
+  content: attr(data-ch);
+}
+
+.typewrite-cursor::after {
+  content: "|";
 }
 
 .typewrite-cursor {
