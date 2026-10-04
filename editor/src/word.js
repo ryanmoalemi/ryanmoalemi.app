@@ -37,6 +37,7 @@ function imageView(resolveSrc) {
     paintImage(img, props.node, resolveSrc);
     return {
       dom: img,
+      ignoreMutation: function () { return true; },
       update: function (updated) {
         if (updated.type.name !== props.node.type.name) return false;
         paintImage(img, updated, resolveSrc);
@@ -141,7 +142,11 @@ var RawNode = Node.create({
       var el = holder.firstElementChild || holder;
       el.setAttribute("data-rm-raw", "1");
       el.setAttribute("contenteditable", "false");
-      return { dom: el };
+      return {
+        dom: el,
+        ignoreMutation: function () { return true; },
+        stopEvent: function () { return true; }
+      };
     };
   }
 });
