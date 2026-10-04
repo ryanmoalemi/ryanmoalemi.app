@@ -114,15 +114,19 @@ Each category shows `N/10` and its one-line reason. The numbers are whole. The s
 
 ### Review screen
 
-The review screen is one page. GitHub Pages hosts it, and the GitHub API is the only place drafts and edits are stored. On a wide window the dashboard sits beside the editable article. On a phone the dashboard stacks above the article.
+The review screen is one page. GitHub Pages hosts it, and the GitHub API is the only place drafts and edits are stored. On a wide window the post panel and scorecard sit beside the editable article. On a phone they stack above the article.
 
-The article opens as a word processor, like a document, using the site's own CSS. Ryan does not see HTML unless he opens Advanced. He can click in the article and type. The toolbar has Bold, Italic, Underline, Heading 2, Heading 3, bullets, numbered lists, link, undo, redo, and clear formatting. Bold, italic, underline, and undo also work with Ctrl or Cmd plus B, I, U, and Z. New links open in a new tab unless he turns that off.
+The article opens as a block editor, using the site's own CSS. Each paragraph, heading, image, table, quote, list, card grid, and FAQ item is a block. Ryan does not see HTML unless he opens Advanced. He can click in a block and type. A + button or the / key opens a menu to insert a block. Each block has a toolbar with up and down arrows, a drag handle, Duplicate, and Delete. The formatting toolbar still has Bold, Italic, Underline, Heading 2, Heading 3, bullets, numbered lists, link, undo, redo, and clear formatting. Bold, italic, underline, and undo also work with Ctrl or Cmd plus B, I, U, and Z. New links open in a new tab unless he turns that off.
 
-A side panel has plain text boxes labeled Title, Search description, and Image description for each photo. Title updates the page heading. Search description is the meta description. Image description is the photo's alt text.
+An image block can be replaced from his computer. The file is saved on the pull request branch as WebP, with width and height. The block has caption, credit, source link, and alt text fields. An empty credit leaves an existing caption alone.
+
+The Post panel lists Title (about 60 characters), URL slug, Search description (about 155 characters), featured image, author, and publish date. Author starts as Ryan Moalemi and is written into the page when he edits it, or when the page already has a byline. Category and tags appear when the page already has them. Image descriptions for each photo stay in the panel too. The scorecard stays under the Post panel.
+
+FAQ blocks use the page's own FAQ markup. When the questions or answers change, the editor updates the FAQPage search summary to match. Other search summaries stay as they were. Ryan does not see that summary.
 
 Show my edits highlights insertions and deletions against the original draft. Select text and choose Add note to leave a comment. Those notes are included when he sends the draft back.
 
-Edits are saved in this browser every few seconds. The page says Saved. Reloading restores them. Save edits, Approve & publish, and Send back still commit to the pull request branch when the text, title, or search description changed.
+Edits are saved in this browser every few seconds. The page says Saved. Reloading restores them. Save draft, Approve & publish, and Send back with notes still commit to the pull request branch when the text, title, search description, slug, or featured image changed. Preview shows the rendered page with block controls hidden, and can switch between desktop and phone width. Revisions lists earlier commits on the branch. Restoring one loads it into the editor. The next Save draft commits it forward.
 
 The dashboard shows `Overall N/10` and the stars, then two boxes side by side: "Information gain: what makes this unique and hard to copy" (`unique` bullets and the `info_gain` line) and "Human voice" (`scorecard.ai_flags`). If `unique` is empty, the information-gain box shows a red "Nothing unique yet" warning. Under those boxes it shows `summary`, two or three plain sentences, then each category as `N/10` with its reason.
 
@@ -139,7 +143,8 @@ Write a full HTML document.
 - Do not depend on scripts for the reading view. Scripts stay in the file when Ryan saves, but the preview does not run them and they are not editable.
 - Keep the visible title in an `h1`. Ryan's Title field updates that heading, the document `<title>` (a site suffix after the old title is kept), `og:title` when present, and `title` in the review JSON.
 - Keep `<meta name="description">` in the document. Ryan's Search description field updates that tag, `og:description` when present, and `meta_description` in the review JSON.
-- Keep figures, captions, tables, links, classes, and JSON-LD. The editor writes the article body back with the same tags and classes. Anything outside the article body is left as it was.
+- Keep figures, captions, tables, links, classes, and JSON-LD. The editor writes the article body back with the same tags and classes. Block controls are not saved. Anything outside the article body is left as it was.
+- FAQ markup can be `details`/`summary` or cards inside a section whose id is `faq`. The visible question and answer are what the FAQPage summary uses after a real edit. An unchanged FAQ leaves that summary byte for byte.
 
 ## What the editor writes
 
@@ -156,8 +161,10 @@ Actions:
 
 | Button | Effect |
 | --- | --- |
-| Save edits | One commit on the pull request branch. The message is exactly `Ryan edits`. The commit updates the article HTML and, when the title or meta description changed, the review JSON. Before the commit, the editor checks that photos, photo credits, tables, links, and the hidden search summary are still present unless Ryan deleted them. If that check fails, nothing is committed. |
+| Save draft | One commit on the pull request branch. The message is exactly `Ryan edits`. The commit updates the article HTML and, when the title, meta description, URL slug, or featured image changed, the review JSON. Before the commit, the editor checks that photos, photo credits, tables, links, and the hidden search summary are still present unless Ryan deleted them. FAQ questions may update the FAQPage summary. If the check fails, nothing is committed. |
+| Preview | Shows the rendered page as it will look live, with desktop and phone widths. |
+| Revisions | Lists earlier commits on the branch. Restore loads one into the editor. Save draft commits it forward. |
 | Approve & publish | Asks for confirmation, saves edits, squash-merges the pull request, then shows the live URL (`https://` + `site` + `url_path`). The same check runs before the save. A failed check does not merge. |
-| Send back | Saves unsent edits, posts Ryan's note and any comments as a pull request comment, and adds the label `changes-requested`. |
+| Send back with notes | Saves unsent edits, posts Ryan's note and any comments as a pull request comment, and adds the label `changes-requested`. |
 
 The live URL can take a minute to update after a merge while GitHub Pages builds.
