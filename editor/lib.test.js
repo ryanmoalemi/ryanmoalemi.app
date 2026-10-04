@@ -177,8 +177,14 @@ assert.strictEqual((editorSrc.match(/fetch\s*\(/g) || []).length, 1);
 
 var robots = fs.readFileSync(path.join(__dirname, "..", "robots.txt"), "utf8");
 assert.ok(robots.indexOf("Disallow: /editor/") > -1);
+assert.ok(robots.indexOf("Disallow: /AGENTS.md") > -1);
+assert.ok(robots.indexOf("Disallow: /README.md") > -1);
 var sitemap = fs.readFileSync(path.join(__dirname, "..", "sitemap.xml"), "utf8");
 assert.strictEqual(sitemap.indexOf("editor"), -1);
+assert.ok(sitemap.indexOf("https://ryanmoalemi.app/privacy/") > -1);
+assert.strictEqual(sitemap.indexOf("privacy.html"), -1);
+var pagesConfig = fs.readFileSync(path.join(__dirname, "..", "_config.yml"), "utf8");
+assert.ok(pagesConfig.indexOf('"*.md"') > -1);
 
 console.log("node tests passed");
 
