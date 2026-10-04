@@ -45,6 +45,9 @@
     "body.rm-preview .rm-chrome, body.rm-preview .rm-plus, body.rm-preview .rm-menu { display: none !important; }",
     "body.rm-preview .rm-block { display: contents; }",
     "body:not(.rm-preview)[data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]), body:not(.rm-preview) [data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]) { display: none !important; }",
+    "#rm-parked-chrome, [data-rm-slot] { display: none !important; }",
+    "body:not(.rm-preview) header, body:not(.rm-preview) footer, body:not(.rm-preview) nav, body:not(.rm-preview) .utility, body:not(.rm-preview) .ticker, body:not(.rm-preview) .site-nav, body:not(.rm-preview) .meta-row, body:not(.rm-preview) .rm-block:has(.meta-row) { display: none !important; }",
+    "body:not(.rm-preview) nav.site-nav > ul, body:not(.rm-preview) .site-nav > ul { display: none !important; }",
     "@media (max-width: 900px) {",
     "body.rm-preview nav.site-nav:not(.is-open) > ul { display: none !important; }",
     "body.rm-preview nav.site-nav.is-open > ul { display: block !important; }",
@@ -542,6 +545,61 @@
     }
   }
 
+  function parkSiteChrome(doc, root) {
+    if (!doc || !doc.body) return;
+    var selectors = "header, footer, nav, .utility, .ticker, .site-header, .site-footer";
+    var list = Array.prototype.slice.call(doc.body.querySelectorAll(selectors));
+    var park = doc.getElementById("rm-parked-chrome");
+    var tops = list.filter(function (el) {
+      if (!el || el.id === "rm-parked-chrome") return false;
+      if (park && park.contains(el)) return false;
+      if (root && (el === root || root.contains(el))) return false;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i] !== el && list[i].contains(el)) return false;
+      }
+      return true;
+    });
+    if (!tops.length) return;
+    if (!park) {
+      park = doc.createElement("div");
+      park.id = "rm-parked-chrome";
+      park.hidden = true;
+      doc.body.appendChild(park);
+    }
+    tops.forEach(function (el, index) {
+      var id = el.getAttribute("data-rm-parked-id");
+      if (!id) {
+        id = "c" + index;
+        el.setAttribute("data-rm-parked-id", id);
+        var slot = doc.createElement("span");
+        slot.setAttribute("data-rm-slot", id);
+        slot.hidden = true;
+        if (el.parentNode) el.parentNode.insertBefore(slot, el);
+      }
+      park.appendChild(el);
+    });
+  }
+
+  function restoreSiteChrome(doc) {
+    if (!doc) return;
+    var park = doc.getElementById("rm-parked-chrome");
+    if (!park) return;
+    Array.prototype.slice.call(park.children).forEach(function (el) {
+      var id = el.getAttribute("data-rm-parked-id");
+      var slot = id ? doc.querySelector('[data-rm-slot="' + id + '"]') : null;
+      if (slot && slot.parentNode) slot.parentNode.insertBefore(el, slot);
+    });
+  }
+
+  function parkSiteChromeAgain(doc) {
+    if (!doc) return;
+    var park = doc.getElementById("rm-parked-chrome");
+    if (!park) return;
+    Array.prototype.slice.call(doc.querySelectorAll("[data-rm-parked-id]")).forEach(function (el) {
+      if (el.parentNode !== park) park.appendChild(el);
+    });
+  }
+
   function bindSiteNav(doc) {
     if (!doc || !doc.documentElement || doc.documentElement.getAttribute("data-rm-nav")) return;
     var nav = doc.querySelector("nav.site-nav");
@@ -743,6 +801,7 @@
     style.setAttribute("data-rm-preview", "1");
     style.textContent = cssChunks.join("\n") + "\n" + PREVIEW_CSS;
     (preview.head || preview.documentElement).appendChild(style);
+    parkSiteChrome(preview, root);
     return {
       srcdoc: lib.serializeDocument(preview),
       json: json,
@@ -1071,9 +1130,16 @@
   function setPreviewMode(on) {
     document.body.classList.toggle("live-preview", !!on);
     var frame = document.getElementById("preview");
-    if (frame && frame.contentDocument && frame.contentDocument.body) {
-      frame.contentDocument.body.classList.toggle("rm-preview", !!on);
-      if (on) bindSiteNav(frame.contentDocument);
+    var doc = frame && frame.contentDocument;
+    if (doc && doc.body) {
+      if (on) {
+        restoreSiteChrome(doc);
+        doc.body.classList.add("rm-preview");
+        bindSiteNav(doc);
+      } else {
+        parkSiteChromeAgain(doc);
+        doc.body.classList.remove("rm-preview");
+      }
     }
     var button = document.getElementById("preview-live");
     if (button) button.setAttribute("aria-pressed", on ? "true" : "false");

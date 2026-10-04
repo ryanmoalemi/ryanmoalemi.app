@@ -243,17 +243,24 @@ if (webpResult.indexOf("PASS") !== 0) throw new Error("webp conversion failed: "
 console.log(webpResult);
 
 assert.ok(editorSrc.indexOf("body:not(.rm-preview)[data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]), body:not(.rm-preview) [data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]) { display: none !important; }") > -1);
+assert.ok(editorSrc.indexOf("body:not(.rm-preview) header, body:not(.rm-preview) footer, body:not(.rm-preview) nav, body:not(.rm-preview) .utility, body:not(.rm-preview) .ticker, body:not(.rm-preview) .site-nav, body:not(.rm-preview) .meta-row, body:not(.rm-preview) .rm-block:has(.meta-row) { display: none !important; }") > -1);
+assert.ok(editorSrc.indexOf("body:not(.rm-preview) nav.site-nav > ul, body:not(.rm-preview) .site-nav > ul { display: none !important; }") > -1);
 assert.ok(editorSrc.indexOf("body.rm-preview nav.site-nav:not(.is-open) > ul { display: none !important; }") > -1);
 assert.ok(editorSrc.indexOf("function bindSiteNav") > -1);
+assert.ok(editorSrc.indexOf("function parkSiteChrome") > -1);
+assert.ok(editorSrc.indexOf("function restoreSiteChrome") > -1);
 var chromePage = "<!DOCTYPE html><meta charset=\"utf-8\"><style>" +
   "body:not(.rm-preview)[data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]), body:not(.rm-preview) [data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]) { display: none !important; }" +
+  "#rm-parked-chrome, [data-rm-slot] { display: none !important; }" +
+  "body:not(.rm-preview) header, body:not(.rm-preview) footer, body:not(.rm-preview) nav, body:not(.rm-preview) .utility, body:not(.rm-preview) .ticker, body:not(.rm-preview) .site-nav, body:not(.rm-preview) .meta-row, body:not(.rm-preview) .rm-block:has(.meta-row) { display: none !important; }" +
+  "body:not(.rm-preview) nav.site-nav > ul, body:not(.rm-preview) .site-nav > ul { display: none !important; }" +
   "@media (max-width: 900px) {" +
   "body.rm-preview nav.site-nav:not(.is-open) > ul { display: none !important; }" +
   "body.rm-preview nav.site-nav.is-open > ul { display: block !important; }" +
   "}</style><body data-rm-keep>" +
   "<div class=\"utility\">Utility</div>" +
   "<header><nav class=\"site-nav\"><button type=\"button\" class=\"site-nav-toggle\">Menu</button><ul id=\"site-nav-menu\"><li>Home</li></ul></nav></header>" +
-  "<main data-rm-keep><nav class=\"breadcrumbs\">Crumb</nav><article data-rm-root><h1>Headline</h1></article></main>" +
+  "<main data-rm-keep><nav class=\"breadcrumbs\">Crumb</nav><article data-rm-root><div class=\"rm-block\"><div class=\"meta-row\">Collecting</div></div><h1>Headline</h1></article></main>" +
   "<footer>Foot</footer>" +
   "<script>" +
   "function show(el){return getComputedStyle(el).display;}" +
@@ -261,16 +268,22 @@ var chromePage = "<!DOCTYPE html><meta charset=\"utf-8\"><style>" +
   "var header=document.querySelector('header');" +
   "var crumb=document.querySelector('.breadcrumbs');" +
   "var title=document.querySelector('h1');" +
+  "var meta=document.querySelector('.meta-row');" +
+  "var metaBlock=document.querySelector('.rm-block');" +
   "var menu=document.getElementById('site-nav-menu');" +
   "var nav=document.querySelector('nav.site-nav');" +
-  "var edit=[show(utility),show(header),show(crumb),show(title)].join(',');" +
+  "var edit=[show(utility),show(header),show(crumb),show(title),show(meta),show(metaBlock)].join(',');" +
+  "var park=document.createElement('div'); park.id='rm-parked-chrome'; park.hidden=true; document.body.appendChild(park);" +
+  "var slot=document.createElement('span'); slot.setAttribute('data-rm-slot','c0'); slot.hidden=true; header.parentNode.insertBefore(slot, header); header.setAttribute('data-rm-parked-id','c0'); park.appendChild(header);" +
+  "var parked=document.getElementById('rm-parked-chrome').contains(header) && show(park)==='none';" +
   "document.body.classList.add('rm-preview');" +
-  "var preview=[show(header),show(title),show(menu)].join(',');" +
+  "slot.parentNode.insertBefore(header, slot);" +
+  "var preview=[show(header),show(title),show(menu),show(meta)].join(',');" +
   "nav.classList.add('is-open');" +
   "var open=show(menu);" +
   "var width=window.innerWidth;" +
-  "var ok=edit==='none,none,none,block' && preview==='block,block,none' && open==='block';" +
-  "document.documentElement.setAttribute('data-result', (ok ? 'PASS chrome ' : 'FAIL ') + edit + ' | ' + preview + ' | ' + open + ' | ' + width);" +
+  "var ok=edit==='none,none,none,block,none,none' && parked && preview==='block,block,none,block' && open==='block';" +
+  "document.documentElement.setAttribute('data-result', (ok ? 'PASS chrome ' : 'FAIL ') + edit + ' | ' + preview + ' | ' + open + ' | parked=' + parked + ' | ' + width);" +
   "</script>";
 var chromeFile = path.join(os.tmpdir(), "editor-chrome-test.html");
 fs.writeFileSync(chromeFile, chromePage);
