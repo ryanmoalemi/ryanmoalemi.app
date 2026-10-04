@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" role="img" aria-label="Sample illustration of a sunrise over a hillside">
+  <rect width="1200" height="640" fill="#10131a"/>
+  <circle cx="860" cy="250" r="92" fill="#f4b740"/>
+  <path d="M0 460 C180 390 280 500 460 450 C680 390 760 520 980 460 C1100 428 1160 470 1200 450 L1200 640 L0 640 Z" fill="#1c2433"/>
+  <path d="M0 520 C220 470 340 560 560 520 C790 476 900 560 1200 510 L1200 640 L0 640 Z" fill="#243044"/>
+</svg>
