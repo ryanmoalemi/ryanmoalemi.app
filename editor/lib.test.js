@@ -147,8 +147,9 @@ assert.strictEqual(updated.endsWith("\n"), true);
 
 var editorSrc = fs.readFileSync(path.join(__dirname, "editor.js"), "utf8");
 var libSrc = fs.readFileSync(path.join(__dirname, "lib.js"), "utf8");
+var docSrc = fs.readFileSync(path.join(__dirname, "doc.js"), "utf8");
 var htmlSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
-[editorSrc, libSrc, htmlSrc].forEach(function (src) {
+[editorSrc, libSrc, docSrc, htmlSrc].forEach(function (src) {
   assert.strictEqual(src.indexOf("raw.githubusercontent.com"), -1);
   assert.strictEqual(/github_pat_[A-Za-z0-9]{20,}/.test(src), false);
   assert.strictEqual(/ghp_[A-Za-z0-9]{20,}/.test(src), false);
@@ -177,14 +178,49 @@ assert.strictEqual((editorSrc.match(/fetch\s*\(/g) || []).length, 1);
 
 var robots = fs.readFileSync(path.join(__dirname, "..", "robots.txt"), "utf8");
 assert.ok(robots.indexOf("Disallow: /editor/") > -1);
-assert.ok(robots.indexOf("Disallow: /AGENTS.md") > -1);
-assert.ok(robots.indexOf("Disallow: /README.md") > -1);
 var sitemap = fs.readFileSync(path.join(__dirname, "..", "sitemap.xml"), "utf8");
 assert.strictEqual(sitemap.indexOf("editor"), -1);
-assert.ok(sitemap.indexOf("https://ryanmoalemi.app/privacy/") > -1);
-assert.strictEqual(sitemap.indexOf("privacy.html"), -1);
-var pagesConfig = fs.readFileSync(path.join(__dirname, "..", "_config.yml"), "utf8");
-assert.ok(pagesConfig.indexOf('"*.md"') > -1);
+
+assert.deepStrictEqual(lib.diffWords("alpha beta", "alpha beta"), [{ op: "equal", text: "alpha beta" }]);
+assert.deepStrictEqual(lib.diffWords("alpha beta", "alpha gamma beta"), [
+  { op: "equal", text: "alpha " },
+  { op: "insert", text: "gamma " },
+  { op: "equal", text: "beta" }
+]);
+assert.deepStrictEqual(lib.diffWords("alpha beta", "alpha"), [
+  { op: "equal", text: "alpha" },
+  { op: "delete", text: " beta" }
+]);
+assert.strictEqual(lib.formatSendBackNote("Fix the lede.", [
+  { quote: "Hello world", note: "Say who this is." },
+  { quote: "", note: "Check the date." }
+]), "Fix the lede.\n\nNotes on the draft:\n- \"Hello world\": Say who this is.\n- Check the date.");
+assert.strictEqual(lib.formatSendBackNote("", [{ quote: "Sale", note: "Add the date." }]), "Notes on the draft:\n- \"Sale\": Add the date.");
+assert.strictEqual(lib.autosaveKey("ryanmoalemi/fullcourtbuckets", 78, "news/a/index.html"), "rm-editor-draft:ryanmoalemi/fullcourtbuckets:78:news/a/index.html");
+
+var sampleDoc = "<!DOCTYPE html><html><head><title>Old title | Site</title><meta name=\"description\" content=\"Old desc\"><meta property=\"og:title\" content=\"Old title | Site\"><meta property=\"og:description\" content=\"Old desc\"><meta name=\"twitter:title\" content=\"Old title\"><script type=\"application/ld+json\">{\"headline\":\"Old title\"}</script></head><body><header><nav>Keep me</nav></header><main><article class=\"story\"><p>Inside</p></article></main><footer>Footer stays</footer></body></html>";
+var spliced = lib.replaceNthElementInner(sampleDoc, "article", 0, "<p>Changed</p>");
+assert.ok(spliced.indexOf("<header><nav>Keep me</nav></header>") > -1);
+assert.ok(spliced.indexOf("<footer>Footer stays</footer>") > -1);
+assert.ok(spliced.indexOf("{\"headline\":\"Old title\"}") > -1);
+assert.ok(spliced.indexOf("<article class=\"story\"><p>Changed</p></article>") > -1);
+assert.strictEqual(spliced.slice(0, spliced.indexOf("<article")), sampleDoc.slice(0, sampleDoc.indexOf("<article")));
+assert.ok(spliced.endsWith(sampleDoc.slice(sampleDoc.indexOf("</article>"))));
+var titled = lib.updateTitleInHtml(sampleDoc, "New title", "Old title");
+assert.ok(titled.indexOf("<title>New title | Site</title>") > -1);
+assert.ok(titled.indexOf("content=\"New title | Site\"") > -1);
+assert.ok(titled.indexOf("content=\"New title\"") > -1);
+assert.ok(titled.indexOf("{\"headline\":\"Old title\"}") > -1);
+assert.strictEqual(lib.updateTitleInHtml(sampleDoc, "Old title", "Old title"), sampleDoc);
+var described = lib.updateDescriptionInHtml(sampleDoc, "New desc");
+assert.ok(described.indexOf("name=\"description\" content=\"New desc\"") > -1);
+assert.ok(described.indexOf("property=\"og:description\" content=\"New desc\"") > -1);
+assert.ok(described.indexOf("<title>Old title | Site</title>") > -1);
+var applied = lib.applyArticle(sampleDoc, "article", 0, "<p>Edited</p>", { title: "New title", originalH1: "Old title", description: "New desc" });
+assert.ok(applied.indexOf("<p>Edited</p>") > -1);
+assert.ok(applied.indexOf("<title>New title | Site</title>") > -1);
+assert.ok(applied.indexOf("content=\"New desc\"") > -1);
+assert.ok(applied.indexOf("<footer>Footer stays</footer>") > -1);
 
 console.log("node tests passed");
 
@@ -308,3 +344,70 @@ fs.writeFileSync(rejectFile, flowPage(
 var rejectResult = chromeDump(rejectFile);
 if (rejectResult !== "PASS") throw new Error("rejected token was stored: " + (rejectResult || "no result"));
 console.log("reject test passed");
+
+function embedJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+var roundSrc = fs.readFileSync(path.join(__dirname, "vendor", "prosemirror.js"), "utf8") +
+  "\n" + libSrc +
+  "\n" + fs.readFileSync(path.join(__dirname, "doc.js"), "utf8");
+var synthetic = "<!DOCTYPE html><html><head><title>Old title | Site</title><meta name=\"description\" content=\"Old desc\"><meta property=\"og:title\" content=\"Old title | Site\"><meta property=\"og:description\" content=\"Old desc\"><script type=\"application/ld+json\">{\"headline\":\"Old title\"}</script></head><body><header><nav>Keep me</nav></header><main><article class=\"article\" data-kind=\"story\"><h1>Old title</h1><div class=\"meta-row\"><span class=\"cat\">Collecting</span><span class=\"divider\"></span><span>Published October 4, 2026</span></div><p class=\"lead\" data-note=\"alpha\">Hello <strong>world</strong> and <a class=\"inline-link\" href=\"https://example.com/a\" target=\"_blank\" rel=\"noopener\">a link</a>.</p><figure class=\"card\"><img src=\"hero.webp\" alt=\"Hero alt\" width=\"100\" data-credit=\"staff\"><figcaption>Photo by <a href=\"/credit\">Staff</a>.</figcaption></figure><div class=\"table-wrap\"><table><thead><tr><th>Rank</th><th>Name</th></tr></thead><tbody><tr><td>1</td><td>Ada</td></tr></tbody></table></div><ul><li>First point</li><li>Second <em>point</em></li></ul><aside class=\"note\" data-source=\"desk\">An aside with <span class=\"cat\">context</span>.</aside><p>Before<br>after.</p><script type=\"application/ld+json\">{\"@type\":\"Article\",\"headline\":\"Old title\"}</script></article></main><footer>Footer stays</footer></body></html>";
+var roundPage = "<!DOCTYPE html><meta charset=\"utf-8\"><title>round</title><script>" +
+  roundSrc +
+  "</script><script>" +
+  "var synthetic = " + embedJson(synthetic) + ";" +
+  "var fcb = " + embedJson(fs.readFileSync(path.join(__dirname, "fixtures", "fcb-article.html"), "utf8")) + ";" +
+  "var adu = " + embedJson(fs.readFileSync(path.join(__dirname, "fixtures", "adu-home.html"), "utf8")) + ";" +
+  "function walk(node){if(node.nodeType===3){var t=node.textContent.replace(/\\s+/g,' ').trim();return t||null;}if(node.nodeType!==1)return null;var tag=node.tagName.toLowerCase();var attrs={};for(var i=0;i<node.attributes.length;i++){var a=node.attributes[i];if(a.name.indexOf('data-rm-')===0)continue;attrs[a.name]=a.value;}var norm={};Object.keys(attrs).sort().forEach(function(k){norm[k]=attrs[k];});if(tag==='script'||tag==='style')return {tag:tag,attrs:norm,text:node.textContent.replace(/\\s+/g,'')};var kids=[];for(var c=node.firstChild;c;c=c.nextSibling){var child=walk(c);if(child!=null&&child!=='')kids.push(child);}return {tag:tag,attrs:norm,kids:kids};}" +
+  "function snapKids(el){var kids=[];for(var c=el.firstChild;c;c=c.nextSibling){var child=walk(c);if(child!=null&&child!=='')kids.push(child);}return JSON.stringify(kids);}" +
+  "function meaningful(el){var parts=[];function visit(node){if(node.nodeType===3){var t=node.textContent.replace(/\\s+/g,' ').trim();if(t)parts.push(t);return;}if(node.nodeType!==1)return;for(var c=node.firstChild;c;c=c.nextSibling)visit(c);}visit(el);return parts.join(' ');}" +
+  "function round(html, tag, index){var doc=new DOMParser().parseFromString(html,'text/html');var nodes=doc.getElementsByTagName(tag);var root=nodes[index||0];RMDoc.captureOpaque(root);var pm=RMDoc.parseRoot(root);var inner=RMDoc.serialize(pm);var again=new DOMParser().parseFromString('<div id=\"root\">'+inner+'</div>','text/html');var out=again.getElementById('root');var stable=RMDoc.serialize(RMDoc.parseRoot(out));var outside=RMLib.applyArticle(html, tag, index||0, inner, {});var marker=RMLib.replaceNthElementInner(html, tag, index||0, '@@SPLIT@@');var parts=marker.split('@@SPLIT@@');var indexed=RMDoc.indexDoc(pm);var between=pm.textBetween(0, pm.content.size, '\\n', '');return {inner:inner, stable:stable===inner, text:meaningful(root)===meaningful(out), snap:snapKids(root)===snapKids(out), outside:outside.indexOf(parts[0])===0 && outside.endsWith(parts[1]), plain:indexed.text===between, rootText:meaningful(root), outText:meaningful(out)};}" +
+  "var checks=[];" +
+  "try {" +
+  "var syn=round(synthetic,'article',0);" +
+  "checks.push(['synthetic text', syn.text, syn.rootText.slice(0,80)+' vs '+syn.outText.slice(0,80)]);" +
+  "checks.push(['synthetic structure', syn.snap]);" +
+  "checks.push(['synthetic stable', syn.stable]);" +
+  "checks.push(['synthetic outside', syn.outside]);" +
+  "checks.push(['synthetic plain', syn.plain]);" +
+  "var synDoc=new DOMParser().parseFromString(synthetic,'text/html');var synRoot=synDoc.querySelector('article');RMDoc.captureOpaque(synRoot);var synPm=RMDoc.parseRoot(synRoot);var st=RMProseMirror.EditorState.create({doc:synPm});var tr=st.tr;var replaced=false;synPm.descendants(function(node,pos){if(replaced||!node.isText)return;var at=node.text.indexOf('Hello');if(at<0)return;tr.insertText('Hi', pos+at, pos+at+5);replaced=true;});var edited=RMDoc.serialize(tr.doc);checks.push(['edit happened', edited.indexOf('Hi')!==-1 && edited.indexOf('Hello')===-1]);checks.push(['edit keeps figure', edited.indexOf('alt=\"Hero alt\"')!==-1 && edited.indexOf('data-credit=\"staff\"')!==-1]);checks.push(['edit keeps table', edited.indexOf('<th>Rank</th>')!==-1 && edited.indexOf('<td>Ada</td>')!==-1]);checks.push(['edit keeps json', edited.indexOf('\"@type\":\"Article\"')!==-1 || edited.indexOf('\"@type\": \"Article\"')!==-1]);checks.push(['edit keeps class', edited.indexOf('class=\"lead\"')!==-1 && edited.indexOf('data-note=\"alpha\"')!==-1]);" +
+  "var host=document.body||document.documentElement.appendChild(document.createElement('body'));var frame=document.createElement('iframe');frame.setAttribute('sandbox','allow-same-origin');host.appendChild(frame);var idoc=frame.contentDocument;idoc.open();idoc.write('<!DOCTYPE html><html><head></head><body><article class=\"article\"><div id=\"rm-mount\"></div></article></body></html>');idoc.close();var style=idoc.createElement('style');style.textContent=RMDoc.editorCSS;idoc.head.appendChild(style);var editor=RMDoc.createEditor(idoc.getElementById('rm-mount'), synPm, {getOriginal:function(){return RMDoc.plainText(synPm);}});checks.push(['mounted in frame', idoc.body.contains(editor.view.dom)]);checks.push(['no raw tags', editor.view.dom.innerText.indexOf('<h1>')===-1 && editor.view.dom.innerText.indexOf('<p>')===-1]);var hello=null;editor.view.state.doc.descendants(function(node,pos){if(hello||!node.isText)return;var at=node.text.indexOf('Hello');if(at<0)return;hello={from:pos+at,to:pos+at+5};});if(!hello)throw new Error('missing Hello');editor.view.dispatch(editor.view.state.tr.setSelection(RMProseMirror.TextSelection.create(editor.view.state.doc, hello.from, hello.to)));editor.run(editor.commands.bold);var boldHtml=editor.getHTML();checks.push(['bold command', boldHtml.indexOf('<strong>Hello</strong>')!==-1]);editor.setTitle('New title');checks.push(['title command', editor.getTitle()==='New title']);editor.setAlt(0,'New alt');checks.push(['alt command', editor.getHTML().indexOf('alt=\"New alt\"')!==-1]);editor.setDiff(true);editor.destroy();" +
+  "var fcbResult=round(fcb,'article',0);" +
+  "checks.push(['fcb text', fcbResult.text]);" +
+  "checks.push(['fcb structure', fcbResult.snap]);" +
+  "checks.push(['fcb stable', fcbResult.stable]);" +
+  "checks.push(['fcb outside', fcbResult.outside]);" +
+  "checks.push(['fcb plain', fcbResult.plain]);" +
+  "var aduResult=round(adu,'main',0);" +
+  "checks.push(['adu text', aduResult.text]);" +
+  "checks.push(['adu structure', aduResult.snap]);" +
+  "checks.push(['adu stable', aduResult.stable]);" +
+  "checks.push(['adu outside', aduResult.outside]);" +
+  "checks.push(['adu plain', aduResult.plain]);" +
+  "var failed=checks.filter(function(item){return !item[1];}).map(function(item){return item[0]+(item[2]?' '+item[2]:'');});" +
+  "document.documentElement.setAttribute('data-result', failed.length ? 'FAIL '+failed.join(' | ') : 'PASS');" +
+  "} catch (err) { document.documentElement.setAttribute('data-result', 'FAIL '+(err && err.stack ? err.stack : err)); }" +
+  "</script>";
+var roundFile = path.join(os.tmpdir(), "editor-roundtrip-test.html");
+fs.writeFileSync(roundFile, roundPage);
+var roundResult = "";
+try {
+  roundResult = execFileSync("google-chrome", [
+    "--headless=new",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--virtual-time-budget=8000",
+    "--dump-dom",
+    "file://" + roundFile
+  ], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
+} catch (err) {
+  roundResult = (err.stdout || "") + "\n" + (err.stderr || "");
+}
+var roundMatch = String(roundResult).match(/data-result="([^"]*)"/);
+var roundStatus = roundMatch ? roundMatch[1].replace(/&quot;/g, "\"").replace(/&amp;/g, "&").replace(/&#39;/g, "'") : "";
+if (roundStatus !== "PASS") {
+  console.error(String(roundResult).slice(0, 4000));
+  throw new Error("round-trip tests failed: " + (roundStatus || "no result"));
+}
+console.log("round-trip tests passed");

@@ -21,13 +21,9 @@
   var lock = false;
 
   var PREVIEW_CSS = [
-    "[data-rm-edit]:hover { outline: 1px dashed rgba(124, 245, 200, 0.75); outline-offset: 4px; }",
-    "[data-rm-edit]:focus { outline: 2px solid #7cf5c8; outline-offset: 4px; }",
-    "[data-rm-meta] { display: block; margin: 0 0 1.1rem; padding: 0.75rem 0.85rem; border: 1px dashed rgba(124, 245, 200, 0.65); border-radius: 12px; background: rgba(7, 8, 12, 0.78); color: #f4f6fb; font: 500 0.98rem/1.45 'DM Sans', system-ui, sans-serif; }",
-    "[data-rm-meta]:focus { outline: 2px solid #7cf5c8; }",
-    "[data-rm-meta]::before { content: 'Meta description'; display: block; margin-bottom: 0.25rem; font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; color: #7cf5c8; }",
     "[data-rm-hero] { margin: 0 0 1rem; }",
-    "[data-rm-hero] img { width: 100%; height: auto; display: block; }"
+    "[data-rm-hero] img { width: 100%; height: auto; display: block; }",
+    "html, body { margin: 0; }"
   ].join("\n");
 
   function el(tag, attrs, kids) {
@@ -399,6 +395,10 @@
 
   function revokeSession() {
     if (!session) return;
+    if (session.autosaveTimer) window.clearTimeout(session.autosaveTimer);
+    if (session.editor) {
+      try { session.editor.destroy(); } catch (err) { /* iframe already gone */ }
+    }
     (session.blobs || []).forEach(function (url) {
       try { URL.revokeObjectURL(url); } catch (err) { /* already gone */ }
     });
@@ -516,11 +516,107 @@
     });
   }
 
+  function editableSpec(doc) {
+    var articles = doc.getElementsByTagName("article");
+    if (articles.length === 1) return { el: articles[0], tag: "article", index: 0 };
+    var mains = doc.getElementsByTagName("main");
+    if (mains.length) return { el: mains[0], tag: "main", index: 0 };
+    if (articles.length) return { el: articles[0], tag: "article", index: 0 };
+    return { el: doc.body, tag: "body", index: 0 };
+  }
+
+  async function rewriteMedia(sess, filePath, root) {
+    var images = Array.prototype.slice.call(root.querySelectorAll("img[src], source[src], video[poster]"));
+    for (var j = 0; j < images.length; j++) {
+      var node = images[j];
+      var attr = node.hasAttribute("poster") && node.tagName === "VIDEO" ? "poster" : "src";
+      var src = node.getAttribute(attr) || "";
+      if (!src || src.indexOf("blob:") === 0 || lib.isExternalUrl(src)) continue;
+      var assetPath = lib.resolveRepoPath(filePath, src);
+      if (!assetPath) continue;
+      if (!node.getAttribute("data-rm-orig-" + attr)) node.setAttribute("data-rm-orig-" + attr, src);
+      try { node.setAttribute(attr, await blobFor(sess, assetPath)); }
+      catch (err) { sess.warnings.push("Could not load " + assetPath); }
+    }
+    var srcsets = Array.prototype.slice.call(root.querySelectorAll("[srcset]"));
+    for (var s = 0; s < srcsets.length; s++) {
+      var original = srcsets[s].getAttribute("srcset") || "";
+      if (!srcsets[s].getAttribute("data-rm-orig-srcset")) srcsets[s].setAttribute("data-rm-orig-srcset", original);
+      srcsets[s].setAttribute("srcset", await rewriteSrcset(sess, original, filePath));
+    }
+  }
+
+  async function modelFromInner(sess, filePath, inner) {
+    var holder = new DOMParser().parseFromString("<div id=\"rm-root\">" + inner + "</div>", "text/html");
+    var root = holder.getElementById("rm-root");
+    window.RMDoc.captureOpaque(root);
+    await rewriteMedia(sess, filePath, root);
+    return window.RMDoc.parseRoot(root);
+  }
+
+  function readAutosave(draft, filePath) {
+    try {
+      var raw = localStorage.getItem(lib.autosaveKey(draft.repo, draft.number, filePath));
+      if (!raw) return null;
+      var data = JSON.parse(raw);
+      if (!data || typeof data.html !== "string") return null;
+      return data;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function writeAutosave() {
+    if (!session || !session.editor || !state.draft) return;
+    var title = document.getElementById("field-title");
+    var description = document.getElementById("field-description");
+    var payload = {
+      html: session.editor.getHTML(),
+      title: title ? title.value : session.editor.getTitle(),
+      description: description ? description.value : (session.description || ""),
+      comments: session.comments || [],
+      diffOn: !!session.diffOn,
+      at: Date.now()
+    };
+    try {
+      localStorage.setItem(lib.autosaveKey(state.draft.repo, state.draft.number, session.activePath), JSON.stringify(payload));
+      setSaveState("Saved");
+    } catch (err) {
+      setSaveState("Not saved in this browser");
+    }
+  }
+
+  function clearAutosave() {
+    if (!session || !state.draft) return;
+    try { localStorage.removeItem(lib.autosaveKey(state.draft.repo, state.draft.number, session.activePath)); }
+    catch (err) { /* private mode */ }
+  }
+
+  function setSaveState(label) {
+    var node = document.getElementById("save-state");
+    if (node) node.textContent = label;
+  }
+
+  function scheduleAutosave() {
+    state.dirty = true;
+    setSaveState("Unsaved");
+    var save = document.getElementById("save-edits");
+    if (save) save.classList.add("dirty");
+    if (!session) return;
+    if (session.autosaveTimer) window.clearTimeout(session.autosaveTimer);
+    session.autosaveTimer = window.setTimeout(writeAutosave, 3000);
+  }
+
+  function cleanField(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
   async function composePreview(sess, filePath, html) {
-    var doc = new DOMParser().parseFromString(html, "text/html");
-    lib.markEditable(doc);
-    var preview = new DOMParser().parseFromString(lib.serializeDocument(doc), "text/html");
-    stripActive(preview);
+    var preview = new DOMParser().parseFromString(html, "text/html");
+    var spec = editableSpec(preview);
+    window.RMDoc.captureOpaque(spec.el);
+    var hero = sess.draft.meta && sess.draft.meta.hero_image;
+    var heroMissing = !!(hero && !lib.heroPresent(preview, hero));
     var cssChunks = [];
     var links = Array.prototype.slice.call(preview.querySelectorAll("link"));
     for (var i = 0; i < links.length; i++) {
@@ -542,23 +638,13 @@
         sess.warnings.push("Could not load " + cssPath);
       }
     }
-    var images = Array.prototype.slice.call(preview.querySelectorAll("img[src], source[src], video[poster]"));
-    for (var j = 0; j < images.length; j++) {
-      var attr = images[j].hasAttribute("poster") && images[j].tagName === "VIDEO" ? "poster" : "src";
-      var src = images[j].getAttribute(attr) || "";
-      if (!src || lib.isExternalUrl(src)) continue;
-      var assetPath = lib.resolveRepoPath(filePath, src);
-      if (!assetPath) continue;
-      try { images[j].setAttribute(attr, await blobFor(sess, assetPath)); }
-      catch (err) { sess.warnings.push("Could not load " + assetPath); }
-    }
-    var srcsets = Array.prototype.slice.call(preview.querySelectorAll("[srcset]"));
-    for (var s = 0; s < srcsets.length; s++) {
-      srcsets[s].setAttribute("srcset", await rewriteSrcset(sess, srcsets[s].getAttribute("srcset"), filePath));
-    }
-    var root = lib.articleRoot(preview);
-    var hero = sess.draft.meta && sess.draft.meta.hero_image;
-    if (hero && !lib.heroPresent(doc, hero)) {
+    await rewriteMedia(sess, filePath, preview);
+    var model = window.RMDoc.parseRoot(spec.el);
+    var pristine = window.RMDoc.serialize(model);
+    var originalPlain = window.RMDoc.plainText(model);
+    stripActive(preview);
+    while (spec.el.firstChild) spec.el.removeChild(spec.el.firstChild);
+    if (heroMissing) {
       try {
         var figure = preview.createElement("figure");
         figure.setAttribute("data-rm-hero", "1");
@@ -566,28 +652,63 @@
         img.alt = "";
         img.src = await heroSrc(sess, filePath, hero);
         figure.appendChild(img);
-        root.insertBefore(figure, root.firstChild);
+        spec.el.appendChild(figure);
       } catch (err) {
         sess.warnings.push("Could not load the hero image");
       }
     }
-    var meta = preview.createElement("div");
-    meta.setAttribute("data-rm-meta", "1");
-    meta.setAttribute("contenteditable", "true");
-    meta.setAttribute("role", "textbox");
-    meta.setAttribute("aria-label", "Meta description");
-    meta.setAttribute("spellcheck", "true");
-    meta.textContent = (sess.draft.meta && sess.draft.meta.meta_description) || "";
-    root.insertBefore(meta, root.firstChild);
-    preview.querySelectorAll("[data-rm-edit]").forEach(function (node) {
-      node.setAttribute("contenteditable", "true");
-      node.setAttribute("spellcheck", "true");
-    });
+    var mount = preview.createElement("div");
+    mount.id = "rm-mount";
+    spec.el.appendChild(mount);
     var style = preview.createElement("style");
     style.setAttribute("data-rm-preview", "1");
-    style.textContent = cssChunks.join("\n") + "\n" + PREVIEW_CSS;
+    style.textContent = cssChunks.join("\n") + "\n" + PREVIEW_CSS + "\n" + window.RMDoc.editorCSS;
     preview.head.appendChild(style);
-    return lib.serializeDocument(preview);
+    return {
+      srcdoc: lib.serializeDocument(preview),
+      model: model,
+      spec: { tag: spec.tag, index: spec.index },
+      pristine: pristine,
+      originalPlain: originalPlain
+    };
+  }
+
+  async function adoptPreview(filePath, html) {
+    if (session.editor) {
+      try { session.editor.destroy(); } catch (err) { /* iframe replaced */ }
+      session.editor = null;
+    }
+    var built = await composePreview(session, filePath, html);
+    var baseline = session.files[filePath].baseline || { h1: "", description: "" };
+    session.spec = built.spec;
+    session.pristineHtml = built.pristine;
+    session.originalPlain = built.originalPlain;
+    session.model = built.model;
+    session.comments = [];
+    session.diffOn = false;
+    session.pendingTitle = "";
+    session.restored = false;
+    session.description = baseline.description || "";
+    var saved = readAutosave(state.draft, filePath);
+    if (saved) {
+      try {
+        if (saved.html && saved.html !== built.pristine) session.model = await modelFromInner(session, filePath, saved.html);
+        if (Array.isArray(saved.comments)) {
+          session.comments = saved.comments.filter(function (item) { return item && String(item.note || "").trim(); });
+        }
+        session.diffOn = !!saved.diffOn;
+        if (typeof saved.description === "string") session.description = saved.description;
+        if (typeof saved.title === "string") session.pendingTitle = saved.title;
+        session.restored = saved.html !== built.pristine
+          || session.description !== (baseline.description || "")
+          || (!!session.pendingTitle && cleanField(session.pendingTitle) !== cleanField(baseline.h1 || ""));
+      } catch (err) {
+        session.warnings.push("Could not restore the copy saved in this browser.");
+        session.model = built.model;
+        session.restored = false;
+      }
+    }
+    return built.srcdoc;
   }
 
   function baselineFrom(html) {
@@ -600,76 +721,133 @@
     };
   }
 
-  function takeSnap(doc) {
-    var html = {};
-    doc.querySelectorAll("[data-rm-edit]").forEach(function (node) {
-      html[node.getAttribute("data-rm-edit")] = node.innerHTML;
-    });
-    var meta = doc.querySelector("[data-rm-meta]");
-    var h1 = doc.querySelector("h1[data-rm-edit]");
-    return {
-      html: html,
-      description: meta ? meta.textContent.replace(/\s+/g, " ").trim() : "",
-      h1: h1 ? h1.textContent.replace(/\s+/g, " ").trim() : ""
-    };
-  }
-
-  function insertBreak(doc) {
-    var sel = doc.getSelection();
-    if (!sel || !sel.rangeCount) return;
-    var range = sel.getRangeAt(0);
-    range.deleteContents();
-    var br = doc.createElement("br");
-    range.insertNode(br);
-    range.setStartAfter(br);
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }
-
-  function bindPreview(iframe) {
+  function mountEditor(iframe) {
     var doc = iframe.contentDocument;
-    if (!doc) return;
-    session.snap = takeSnap(doc);
-    var mark = function () {
-      state.dirty = true;
-      var save = document.getElementById("save-edits");
-      if (save) save.classList.add("dirty");
-      var titleNode = document.getElementById("review-title");
-      var h1 = doc.querySelector("h1[data-rm-edit]");
-      if (titleNode && h1) titleNode.textContent = h1.textContent.replace(/\s+/g, " ").trim() || "Untitled draft";
-      fitIframe(iframe);
-    };
-    doc.querySelectorAll("[data-rm-edit], [data-rm-meta]").forEach(function (node) {
-      node.addEventListener("input", mark);
-      node.addEventListener("paste", function (event) {
-        event.preventDefault();
-        var text = (event.clipboardData && event.clipboardData.getData("text/plain")) || "";
-        var sel = doc.getSelection();
-        if (!sel || !sel.rangeCount) return;
-        var range = sel.getRangeAt(0);
-        range.deleteContents();
-        range.insertNode(doc.createTextNode(text));
-        range.collapse(false);
-        mark();
-      });
-      node.addEventListener("keydown", function (event) {
-        if (event.key === "Enter" && !event.shiftKey && node.tagName !== "PRE") {
-          event.preventDefault();
-          insertBreak(doc);
-          mark();
-        }
-      });
+    var mount = doc && doc.getElementById("rm-mount");
+    if (!mount || !session || !session.model) {
+      state.error = "The preview could not be opened for editing.";
+      paintStatus();
+      return;
+    }
+    if (session.editor) session.editor.destroy();
+    session.editor = window.RMDoc.createEditor(mount, session.model, {
+      getOriginal: function () { return session.originalPlain || ""; },
+      getComments: function () { return session.comments || []; },
+      onChange: function (tr) {
+        if (tr.docChanged) scheduleAutosave();
+        syncTitleFromDoc();
+        refreshImageFields();
+        paintToolbar();
+        fitIframe(iframe);
+      }
     });
-    doc.addEventListener("click", function (event) {
-      var anchor = event.target && event.target.closest && event.target.closest("a");
-      if (anchor) event.preventDefault();
-    });
-    Array.prototype.forEach.call(doc.images || [], function (img) {
-      img.addEventListener("load", function () { fitIframe(iframe); });
-    });
+    if (session.pendingTitle && cleanField(session.pendingTitle) !== session.editor.getTitle()) {
+      session.editor.setTitle(cleanField(session.pendingTitle));
+    }
+    if (session.diffOn) session.editor.setDiff(true);
+    session.editor.refreshComments();
+    doc.addEventListener("load", function (event) {
+      if (event.target && event.target.tagName === "IMG") fitIframe(iframe);
+    }, true);
+    syncTitleFromDoc();
+    refreshImageFields();
+    renderComments();
+    paintToolbar();
     fitIframe(iframe);
-    window.setTimeout(function () { fitIframe(iframe); }, 250);
+    window.setTimeout(function () { fitIframe(iframe); }, 300);
+  }
+
+  function syncTitleFromDoc() {
+    if (!session || !session.editor) return;
+    var title = session.editor.getTitle();
+    var input = document.getElementById("field-title");
+    if (input && document.activeElement !== input && input.value !== title) input.value = title;
+    var heading = document.getElementById("review-title");
+    if (heading) heading.textContent = (input && document.activeElement === input ? input.value : title) || "Untitled draft";
+  }
+
+  function refreshImageFields() {
+    if (!session || !session.editor) return;
+    var host = document.getElementById("image-fields");
+    if (!host) return;
+    var images = session.editor.images();
+    var sig = images.map(function (item) { return item.src; }).join("\n");
+    if (host.getAttribute("data-sig") === sig) {
+      images.forEach(function (item, index) {
+        var input = host.querySelector("[data-image-index=\"" + index + "\"]");
+        if (input && document.activeElement !== input && input.value !== item.alt) input.value = item.alt;
+      });
+      return;
+    }
+    host.setAttribute("data-sig", sig);
+    clear(host);
+    if (!images.length) {
+      host.append(el("p", { class: "fine" }, "No images in this draft."));
+      return;
+    }
+    images.forEach(function (item, index) {
+      var input = el("input", {
+        type: "text",
+        "data-image-index": String(index),
+        value: item.alt,
+        "aria-label": item.label
+      });
+      input.addEventListener("input", function () {
+        if (session && session.editor) session.editor.setAlt(index, input.value);
+      });
+      host.append(el("label", { class: "field" }, [
+        el("span", { class: "field-label" }, item.label),
+        input
+      ]));
+    });
+  }
+
+  function renderComments() {
+    var host = document.getElementById("comment-list");
+    if (!host || !session) return;
+    clear(host);
+    var comments = session.comments || [];
+    if (!comments.length) {
+      host.append(el("p", { class: "fine" }, "Select text in the article, then add a note. Notes go with Send back."));
+      return;
+    }
+    comments.forEach(function (item, index) {
+      var remove = el("button", { class: "text-btn", type: "button" }, "Remove");
+      remove.addEventListener("click", function () {
+        session.comments.splice(index, 1);
+        if (session.editor) session.editor.refreshComments();
+        renderComments();
+        scheduleAutosave();
+      });
+      host.append(el("article", { class: "comment" }, [
+        el("p", { class: "comment-quote" }, item.quote || ""),
+        el("p", {}, item.note || ""),
+        remove
+      ]));
+    });
+  }
+
+  function paintToolbar() {
+    if (!session || !session.editor) return;
+    var ctx = session.editor.context();
+    function press(id, on) {
+      var button = document.getElementById(id);
+      if (button) button.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    press("tool-bold", ctx.bold);
+    press("tool-italic", ctx.italic);
+    press("tool-underline", ctx.underline);
+    press("tool-h2", ctx.block === "h2");
+    press("tool-h3", ctx.block === "h3");
+    press("tool-ul", ctx.list === "ul");
+    press("tool-ol", ctx.list === "ol");
+    press("tool-link", ctx.link);
+  }
+
+  function runCommand(command) {
+    if (!session || !session.editor) return;
+    session.editor.run(command);
+    paintToolbar();
   }
 
   function fitIframe(iframe) {
@@ -683,20 +861,21 @@
   }
 
   function currentEdits() {
-    var iframe = document.getElementById("preview");
-    var doc = iframe && iframe.contentDocument;
-    if (!doc || !session || !session.snap) return null;
-    var edits = {};
-    doc.querySelectorAll("[data-rm-edit]").forEach(function (node) {
-      var id = node.getAttribute("data-rm-edit");
-      if (node.innerHTML !== session.snap.html[id]) edits[id] = node.innerHTML;
-    });
-    var meta = doc.querySelector("[data-rm-meta]");
-    var h1 = doc.querySelector("h1[data-rm-edit]");
+    if (!session || !session.editor) return null;
+    var file = session.files[session.activePath];
+    if (!file) return null;
+    var titleInput = document.getElementById("field-title");
+    var descInput = document.getElementById("field-description");
+    var title = cleanField(titleInput ? titleInput.value : session.editor.getTitle());
+    var description = cleanField(descInput ? descInput.value : (session.description || ""));
+    var html = session.editor.getHTML();
     return {
-      edits: edits,
-      description: meta ? meta.textContent.replace(/\s+/g, " ").trim() : session.snap.description,
-      h1: h1 ? h1.textContent.replace(/\s+/g, " ").trim() : session.snap.h1
+      html: html,
+      bodyDirty: html !== session.pristineHtml,
+      title: title,
+      titleDirty: title !== cleanField(file.baseline.h1 || ""),
+      description: description,
+      descDirty: description !== cleanField(file.baseline.description || "")
     };
   }
 
@@ -717,10 +896,7 @@
       if (!opts.holdLock) lock = false;
       return false;
     }
-    var h1Changed = change.h1 !== session.snap.h1;
-    var descChanged = change.description !== session.snap.description;
-    var textChanged = Object.keys(change.edits).length > 0;
-    if (!h1Changed && !descChanged && !textChanged) {
+    if (!change.bodyDirty && !change.titleDirty && !change.descDirty) {
       state.dirty = false;
       if (!opts.quiet) {
         state.notice = "No changes to save.";
@@ -731,17 +907,23 @@
     }
     state.busy = "Saving…";
     paintStatus();
-    var updates = {};
-    if (h1Changed) {
-      updates.title = change.h1;
-      updates.originalH1 = file.baseline.h1 || session.snap.h1;
+    var nextHtml = file.originalHtml;
+    if (change.bodyDirty) {
+      var updates = {};
+      if (change.titleDirty) {
+        updates.title = change.title;
+        updates.originalH1 = file.baseline.h1 || "";
+      }
+      if (change.descDirty) updates.description = change.description;
+      nextHtml = lib.applyArticle(file.originalHtml, session.spec.tag, session.spec.index, change.html, updates);
+    } else {
+      if (change.titleDirty) nextHtml = lib.updateTitleInHtml(nextHtml, change.title, file.baseline.h1 || "");
+      if (change.descDirty) nextHtml = lib.updateDescriptionInHtml(nextHtml, change.description);
     }
-    if (descChanged) updates.description = change.description;
-    var nextHtml = lib.applyEdits(file.originalHtml, change.edits, updates);
     var files = [{ path: session.activePath, content: nextHtml }];
-    var nextTitle = h1Changed ? change.h1 : (draft.meta.title || draft.title);
-    var nextDesc = descChanged ? change.description : (draft.meta.meta_description || "");
-    if ((h1Changed || descChanged) && draft.jsonPath) {
+    var nextTitle = change.titleDirty ? change.title : (draft.meta.title || draft.title);
+    var nextDesc = change.descDirty ? change.description : (draft.meta.meta_description || "");
+    if ((change.titleDirty || change.descDirty) && draft.jsonPath) {
       files.push({
         path: draft.jsonPath,
         content: lib.withReviewMeta(draft.jsonText, nextTitle, nextDesc)
@@ -756,8 +938,12 @@
       draft.meta.title = nextTitle;
       draft.meta.meta_description = nextDesc;
       draft.title = nextTitle;
-      session.snap = takeSnap(document.getElementById("preview").contentDocument);
+      session.pristineHtml = session.editor.getHTML();
+      session.originalPlain = session.editor.plain();
+      if (session.editor) session.editor.setDiff(!!session.diffOn);
+      clearAutosave();
       state.dirty = false;
+      setSaveState("Saved");
       if (!opts.quiet) state.notice = "Saved.";
       state.error = "";
       var save = document.getElementById("save-edits");
@@ -876,6 +1062,9 @@
     if (state.busy || !state.draft) return;
     var note = await openModal(function (card, close) {
       var extra = state.dirty ? "Unsaved edits are committed to the branch first." : "The pull request stays open with the review label.";
+      if (session && session.comments && session.comments.length) {
+        extra += " " + session.comments.length + (session.comments.length === 1 ? " note" : " notes") + " on selected text will be included.";
+      }
       card.append(
         el("h2", {}, "Send back"),
         el("p", {}, extra),
@@ -892,8 +1081,10 @@
       area.focus();
     });
     if (note == null) return;
-    if (!note) {
-      state.error = "Write a note before sending the draft back.";
+    var comments = session && session.comments ? session.comments : [];
+    var combined = lib.formatSendBackNote(note, comments);
+    if (!combined) {
+      state.error = "Write a note, or select text and add a note, before sending the draft back.";
       paintStatus();
       return;
     }
@@ -909,7 +1100,7 @@
         state.busy = "Sending…";
         paintStatus();
       }
-      await postNote(state.draft.repo, state.draft.number, note);
+      await postNote(state.draft.repo, state.draft.number, combined);
       try {
         await addLabel(state.draft.repo, state.draft.number, "changes-requested");
       } catch (labelErr) {
@@ -1284,6 +1475,191 @@
     ]);
   }
 
+  function toolButton(id, label, command) {
+    var button = el("button", {
+      type: "button",
+      class: "tool",
+      id: id,
+      title: label,
+      "aria-label": label,
+      "aria-pressed": "false"
+    }, label);
+    button.addEventListener("mousedown", function (event) { event.preventDefault(); });
+    button.addEventListener("click", function () { runCommand(command); });
+    return button;
+  }
+
+  function editorToolbar() {
+    var commands = function () { return session && session.editor ? session.editor.commands : null; };
+    function cmd(name, arg) {
+      return function (state, dispatch, view) {
+        var set = commands();
+        if (!set || !set[name]) return false;
+        var command = arg == null ? set[name] : set[name](arg);
+        return command(state, dispatch, view);
+      };
+    }
+    var bar = el("div", { class: "editor-tools", role: "toolbar", "aria-label": "Formatting" }, [
+      toolButton("tool-bold", "Bold", cmd("bold")),
+      toolButton("tool-italic", "Italic", cmd("italic")),
+      toolButton("tool-underline", "Underline", cmd("underline")),
+      toolButton("tool-h2", "Heading 2", cmd("heading", 2)),
+      toolButton("tool-h3", "Heading 3", cmd("heading", 3)),
+      toolButton("tool-ul", "Bulleted list", cmd("bullet")),
+      toolButton("tool-ol", "Numbered list", cmd("numbered")),
+      el("button", { type: "button", class: "tool", id: "tool-link", "aria-pressed": "false" }, "Link"),
+      toolButton("tool-undo", "Undo", cmd("undo")),
+      toolButton("tool-redo", "Redo", cmd("redo")),
+      toolButton("tool-clear", "Clear formatting", cmd("clear")),
+      el("label", { class: "tool-check" }, [
+        el("input", { type: "checkbox", id: "show-edits" }),
+        "Show my edits"
+      ]),
+      el("button", { type: "button", class: "tool", id: "add-note" }, "Add a note"),
+      el("span", { class: "save-state", id: "save-state" }, "Saved")
+    ]);
+    bar.querySelector("#tool-link").addEventListener("mousedown", function (event) { event.preventDefault(); });
+    bar.querySelector("#tool-link").addEventListener("click", function () { editLink(); });
+    bar.querySelector("#add-note").addEventListener("mousedown", function (event) { event.preventDefault(); });
+    bar.querySelector("#add-note").addEventListener("click", function () { addNote(); });
+    bar.querySelector("#show-edits").addEventListener("change", function (event) {
+      if (!session || !session.editor) return;
+      session.diffOn = !!event.target.checked;
+      session.editor.setDiff(session.diffOn);
+      writeAutosave();
+    });
+    return bar;
+  }
+
+  async function editLink() {
+    if (!session || !session.editor) return;
+    var info = session.editor.linkInfo() || {};
+    var result = await openModal(function (card, close) {
+      var href = el("input", { id: "link-href", type: "url", value: info.href || "", placeholder: "https://", "aria-label": "Link address" });
+      var tab = el("input", { id: "link-tab", type: "checkbox" });
+      tab.checked = info.href ? info.target === "_blank" : true;
+      var actions = [
+        el("button", { class: "btn ghost", type: "button", id: "modal-cancel" }, "Cancel"),
+        info.href ? el("button", { class: "btn ghost", type: "button", id: "modal-remove" }, "Remove link") : null,
+        el("button", { class: "btn primary", type: "button", id: "modal-ok" }, info.href ? "Update link" : "Add link")
+      ];
+      card.append(
+        el("h2", {}, info.href ? "Edit link" : "Add link"),
+        el("label", { class: "field-label", for: "link-href" }, "Address"),
+        href,
+        el("label", { class: "tool-check" }, [tab, "Open in a new tab"]),
+        el("div", { class: "modal-actions" }, actions)
+      );
+      card.querySelector("#modal-cancel").addEventListener("click", function () { close(null); });
+      card.querySelector("#modal-ok").addEventListener("click", function () {
+        close({ href: href.value.trim(), newTab: tab.checked });
+      });
+      var remove = card.querySelector("#modal-remove");
+      if (remove) remove.addEventListener("click", function () { close({ remove: true }); });
+      href.focus();
+    });
+    if (!result || !session.editor) return;
+    if (result.remove) session.editor.removeLink();
+    else if (result.href) session.editor.applyLink(result.href, result.newTab);
+    paintToolbar();
+    scheduleAutosave();
+  }
+
+  async function addNote() {
+    if (!session || !session.editor) return;
+    var selected = session.editor.selectedQuote();
+    if (!selected) {
+      state.error = "Select text in the article first.";
+      paintStatus();
+      return;
+    }
+    var note = await openModal(function (card, close) {
+      card.append(
+        el("h2", {}, "Add a note"),
+        el("p", { class: "comment-quote" }, selected.quote),
+        el("label", { class: "field-label", for: "note-text" }, "Note"),
+        el("textarea", { id: "note-text", placeholder: "What should change here?" }),
+        el("div", { class: "modal-actions" }, [
+          el("button", { class: "btn ghost", type: "button", id: "modal-cancel" }, "Cancel"),
+          el("button", { class: "btn primary", type: "button", id: "modal-ok" }, "Add note")
+        ])
+      );
+      var area = card.querySelector("#note-text");
+      card.querySelector("#modal-cancel").addEventListener("click", function () { close(null); });
+      card.querySelector("#modal-ok").addEventListener("click", function () { close(area.value.trim()); });
+      area.focus();
+    });
+    if (!note) return;
+    session.comments = session.comments || [];
+    session.comments.push({ quote: selected.quote, hint: selected.hint, note: note });
+    session.editor.refreshComments();
+    renderComments();
+    scheduleAutosave();
+    state.error = "";
+    paintStatus();
+  }
+
+  function fieldsPanel(description) {
+    var title = el("input", { id: "field-title", type: "text", "aria-label": "Title" });
+    var desc = el("textarea", { id: "field-description", "aria-label": "Search description" });
+    desc.value = description || "";
+    title.addEventListener("input", function () {
+      if (session && session.editor) session.editor.setTitle(title.value);
+      var heading = document.getElementById("review-title");
+      if (heading) heading.textContent = title.value.trim() || "Untitled draft";
+      scheduleAutosave();
+    });
+    desc.addEventListener("input", function () {
+      if (session) session.description = desc.value;
+      scheduleAutosave();
+    });
+    return el("section", { class: "fields", "aria-label": "Page fields" }, [
+      el("h2", {}, "Page fields"),
+      el("label", { class: "field" }, [
+        el("span", { class: "field-label" }, "Title"),
+        title
+      ]),
+      el("label", { class: "field" }, [
+        el("span", { class: "field-label" }, "Search description"),
+        desc
+      ]),
+      el("h3", {}, "Image description"),
+      el("div", { id: "image-fields" }),
+      el("h3", {}, "Notes"),
+      el("div", { id: "comment-list" })
+    ]);
+  }
+
+  function advancedPanel() {
+    var details = el("details", { class: "advanced" }, [
+      el("summary", {}, "Advanced"),
+      el("p", { class: "fine" }, "The HTML that will be saved. Leave this closed to stay in the article."),
+      el("textarea", { id: "advanced-html", spellcheck: "false", "aria-label": "Article HTML" }),
+      el("button", { class: "btn ghost", type: "button", id: "advanced-apply" }, "Use this HTML")
+    ]);
+    details.addEventListener("toggle", function () {
+      if (!details.open || !session || !session.editor) return;
+      var area = document.getElementById("advanced-html");
+      if (area && document.activeElement !== area) area.value = session.editor.getHTML();
+    });
+    details.querySelector("#advanced-apply").addEventListener("click", function () {
+      var area = document.getElementById("advanced-html");
+      if (!area || !session) return;
+      modelFromInner(session, session.activePath, area.value).then(function (doc) {
+        if (!session || !session.editor) return;
+        session.editor.replaceDoc(doc);
+        scheduleAutosave();
+        state.notice = "Replaced the article from the HTML box.";
+        state.error = "";
+        paintStatus();
+      }).catch(function (err) {
+        state.error = err.message || "That HTML could not be used.";
+        paintStatus();
+      });
+    });
+    return details;
+  }
+
   async function renderReview(route) {
     state.screen = "review";
     document.body.classList.add("reviewing");
@@ -1344,27 +1720,40 @@
       };
       var html = await textAt(draft.headRepo, active, draft.sha);
       session.files[active] = { originalHtml: html, baseline: baselineFrom(html) };
-      var srcdoc = await composePreview(session, active, html);
+      var srcdoc = await adoptPreview(active, html);
       if (state.screen !== "review") return;
       var grid = el("div", { class: "review-grid" }, [
-        scorecard(draft),
-        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([frame]))
+        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([frame, advancedPanel()])),
+        el("div", { class: "side-stack" }, [
+          fieldsPanel(session.description || ""),
+          scorecard(draft)
+        ])
       ]);
       var note = screen.querySelector(".muted");
       if (note) note.remove();
-      screen.append(grid);
+      screen.append(editorToolbar(), grid);
       if (session.warnings.length) {
         screen.append(el("ul", { class: "warnings" }, session.warnings.map(function (item) {
           return el("li", {}, item);
         })));
       }
       frame.addEventListener("load", function () {
-        if (!frame.contentDocument || !frame.contentDocument.body) {
+        if (!session || !frame.contentDocument || !frame.contentDocument.body) {
           state.error = "The preview could not be opened for editing.";
           paintStatus();
           return;
         }
-        bindPreview(frame);
+        var editsToggle = document.getElementById("show-edits");
+        if (editsToggle) editsToggle.checked = !!session.diffOn;
+        var descField = document.getElementById("field-description");
+        if (descField && document.activeElement !== descField) descField.value = session.description || "";
+        mountEditor(frame);
+        if (session.restored) {
+          state.dirty = true;
+          state.notice = "Restored edits saved in this browser.";
+          setSaveState("Saved");
+          paintStatus();
+        }
       });
       frame.srcdoc = srcdoc;
     } catch (err) {
@@ -1391,15 +1780,16 @@
     state.busy = "Loading…";
     paintStatus();
     try {
+      if (session.editor) writeAutosave();
       var html = session.files[path] ? session.files[path].originalHtml : await textAt(session.draft.headRepo, path, session.draft.sha);
       session.files[path] = session.files[path] || { originalHtml: html, baseline: baselineFrom(html) };
       session.activePath = path;
       session.warnings = [];
-      var srcdoc = await composePreview(session, path, session.files[path].originalHtml);
+      var srcdoc = await adoptPreview(path, html);
       var frame = document.getElementById("preview");
       frame.srcdoc = srcdoc;
-      state.dirty = false;
-      state.notice = "";
+      state.dirty = !!session.restored;
+      state.notice = session.restored ? "Restored edits saved in this browser." : "";
       document.querySelectorAll(".file-switch button").forEach(function (button) {
         button.setAttribute("aria-pressed", button.textContent === path.split("/").pop() ? "true" : "false");
       });
@@ -1452,6 +1842,10 @@
     if (!state.dirty) return;
     event.preventDefault();
     event.returnValue = "";
+  });
+
+  window.addEventListener("pagehide", function () {
+    if (state.screen === "review" && session && session.editor) writeAutosave();
   });
 
   async function boot() {
