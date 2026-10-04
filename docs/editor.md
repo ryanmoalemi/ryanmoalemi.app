@@ -88,14 +88,14 @@ Every score is a whole number from 0 to 10. There are 10 categories, in this ord
 | `url_path` | Path on the live site. Start it with `/`. |
 | `files` | Repo paths of the article HTML documents. The editor opens the file that matches `url_path`, otherwise the first HTML file. |
 | `hero_image` | Repo path or absolute URL of the hero image. Also include that image in the HTML. |
-| `unique` | Two to four short bullets on what makes the draft hard to copy. Use `[]` only when there is nothing unique yet. |
+| `unique` | Two to four plain bullets on what makes this unique and hard to copy, such as our own data, original analysis, real photos, or first-hand reporting. Shown under the stars. Use `[]` when there is nothing unique yet. An empty list shows a red "Nothing unique yet" warning. |
 | `unverified` | Array of claims that are not checked. Use `[]` when every claim is checked. |
 | `scorecard.overall` | Whole number from 0 to 10. Shown as `Overall 8/10`. |
 | `scorecard.max` | Scale for the overall score. Use `10`. |
 | `scorecard.stars` | Optional. The editor draws stars from `overall / 2`. A score of 8 is 4 stars. A score of 9 is 4.5 stars. Half stars appear only in the icons. |
 | `scorecard.grade` | `Ready`, `Needs work`, or `Rework`. The editor also computes this from the scores below. |
 | `scorecard.categories` | Each item has `name`, `score` (0 to 10), `max` (`10`), and `reason` (one line). |
-| `scorecard.info_gain` | One line on what this draft adds. Shown inside the information-gain box. |
+| `scorecard.info_gain` | One line on what this draft adds. Shown in the box under the stars, after the `unique` bullets. |
 | `scorecard.ai_flags` | Lines that read as AI-written, and how they were fixed. Use `[]` when none remain. |
 
 ### Score badge
@@ -114,7 +114,7 @@ Each category shows `N/10` (or `score/max`), stars (`score / max * 5`, nearest h
 
 ### Review screen
 
-The star rating sits at the top of the review screen. Directly under it, and above the article, a highlighted box titled "What makes this hard to copy" shows `uniqueness.summary` and `uniqueness.points`. The category scorecard stays on the same screen. On a wide window it sits beside the article. On a phone it follows the article. The panel also shows "Human voice" (`ai_flags`) and the article `summary`.
+The star rating sits at the top of the review screen. Directly under it, and above the article, a short box titled "What makes this unique and hard to copy" lists the `unique` bullets and the `info_gain` line. If `unique` is empty, that box shows a red "Nothing unique yet" warning. The category scorecard stays on the same screen. On a wide window it sits beside the article. On a phone it follows the article. The panel also shows "Human voice" (`ai_flags`) and the article `summary`. The inbox still shows the first sentence of `uniqueness.summary` under the title when that field is present.
 
 ## Article HTML
 

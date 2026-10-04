@@ -1203,7 +1203,6 @@
     var meta = draft.meta || {};
     var sc = meta.scorecard || {};
     var cats = Array.isArray(sc.categories) ? sc.categories : [];
-    var info = textOf(sc.info_gain);
     var flags = lib.aiFlags(sc);
     var summary = lib.articleSummary(meta);
     var voiceBox = el("section", { class: "callout" }, [
@@ -1217,11 +1216,7 @@
       el("section", { class: "callout summary-box" }, [
         el("h3", {}, "Summary"),
         el("p", { class: "info-copy" }, summary || "No summary yet.")
-      ]),
-      info ? el("div", { class: "score-block" }, [
-        el("h3", {}, "Info gain"),
-        el("p", { class: "info-copy" }, info)
-      ]) : null
+      ])
     ];
     cats.forEach(function (cat) {
       var score = Number(cat && cat.score);
@@ -1263,23 +1258,24 @@
   function reviewLead(draft) {
     var meta = draft.meta || {};
     var bits = scoreBits(meta);
-    var block = lib.uniquenessBlock(meta);
+    var points = lib.stringList(meta.unique);
+    var info = textOf((meta.scorecard || {}).info_gain);
     var kids = [
       bits ? scoreRow(bits, true) : el("div", { class: "score-head" }, [
         el("p", { class: "score-total" }, "No score"),
         badgeNode(lib.badgeFor(meta.scorecard))
       ])
     ];
-    if (block.summary || block.points.length) {
-      var box = [el("h2", {}, "What makes this hard to copy")];
-      if (block.summary) box.push(el("p", {}, block.summary));
-      if (block.points.length) {
-        box.push(el("ul", { class: "point-list" }, block.points.map(function (item) {
-          return el("li", {}, item);
-        })));
-      }
-      kids.push(el("section", { class: "uniqueness", id: "uniqueness" }, box));
+    var box = [el("h2", {}, "What makes this unique and hard to copy")];
+    if (points.length) {
+      box.push(el("ul", { class: "point-list" }, points.map(function (item) {
+        return el("li", {}, item);
+      })));
+    } else {
+      box.push(el("p", { class: "warn-unique" }, "Nothing unique yet"));
     }
+    if (info) box.push(el("p", { class: "info-copy" }, info));
+    kids.push(el("section", { class: "uniqueness" + (points.length ? "" : " warn"), id: "uniqueness" }, box));
     return el("section", { class: "review-lead" }, kids);
   }
 

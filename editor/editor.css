@@ -337,6 +337,8 @@ h1.display {
 }
 .uniqueness p { margin: 0 0 0.55rem; color: #d7dce8; }
 .uniqueness .point-list { margin: 0; }
+.uniqueness.warn { border-color: rgba(255, 107, 107, 0.55); background: rgba(255, 107, 107, 0.08); }
+.uniqueness .info-copy { margin: 0.55rem 0 0; }
 .review-grid { display: flex; flex-direction: column; gap: 1rem; }
 .preview-wrap { min-width: 0; }
 .file-switch { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
