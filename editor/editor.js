@@ -241,16 +241,25 @@
 
   function scoreBits(meta) {
     var sc = (meta && meta.scorecard) || {};
-    var overall = lib.overallScore(sc);
-    if (overall == null) return null;
-    var max = lib.scoreMax(sc);
+    var points = lib.pointsScore(sc);
+    if (!points) return null;
+    var stars = lib.starCount(points.score, points.max);
+    var fraction = lib.formatScore(points.score) + "/" + lib.formatScore(points.max);
     return {
-      overall: overall,
-      max: max,
-      stars: lib.starCount(overall, max),
+      stars: stars,
       badge: lib.badgeFor(sc),
-      text: "Overall " + overall + "/" + max
+      starText: lib.starPhrase(stars),
+      fraction: points.kind === "overall" ? ("Overall " + fraction) : fraction
     };
+  }
+
+  function scoreRow(bits, prominent) {
+    return el("div", { class: prominent ? "score-head" : "card-score" }, [
+      starsNode(bits.stars),
+      el("span", { class: "star-num" }, bits.starText),
+      el("span", { class: "overall" }, bits.fraction),
+      badgeNode(bits.badge)
+    ]);
   }
 
   function setBanner(parent, message, kind) {
@@ -1130,11 +1139,7 @@
           el("div", { class: "card-top" }, el("p", { class: "card-site" }, draft.site || draft.repo)),
           el("h2", {}, draft.title || "Untitled draft"),
           blurb ? el("p", { class: "card-summary" }, blurb) : null,
-          el("div", { class: "card-score" }, bits ? [
-            starsNode(bits.stars),
-            el("span", { class: "overall" }, bits.text),
-            badgeNode(bits.badge)
-          ] : [
+          bits ? scoreRow(bits, false) : el("div", { class: "card-score" }, [
             badgeNode(draft.badge || { key: "missing", label: "No score" })
           ]),
           el("p", { class: "card-meta" }, [
@@ -1217,9 +1222,8 @@
         : el("p", { class: "info-copy" }, "No lines flagged.")
     ]);
     var blocks = [
-      el("div", { class: "score-head" }, [
-        el("p", { class: "score-total" }, bits ? bits.text : "Overall n/a"),
-        bits ? starsNode(bits.stars) : null,
+      bits ? scoreRow(bits, true) : el("div", { class: "score-head" }, [
+        el("p", { class: "score-total" }, "No score"),
         badgeNode(badge)
       ]),
       el("div", { class: "gain-row" }, [uniqueBox, voiceBox]),
@@ -1240,7 +1244,10 @@
           el("strong", {}, (cat && cat.name) || "Category"),
           el("span", { class: "cat-score" }, whole + "/" + max)
         ]),
-        starsNode(stars),
+        el("div", { class: "cat-stars" }, [
+          starsNode(stars),
+          el("span", { class: "star-num" }, lib.starPhrase(stars))
+        ]),
         cat && cat.reason ? el("p", { class: "reason" }, cat.reason) : null
       ]));
     });

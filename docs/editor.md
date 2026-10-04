@@ -100,9 +100,9 @@ The inbox and the review screen show stars, `Overall N/10`, and one badge:
 | Needs work | Amber | Overall is 6 or 7, or overall is 8 or higher but a Ready gate is missed |
 | Rework | Red | Overall is under 6 |
 
-If `overall` is missing, the badge is Needs work.
+If `overall` is missing and the draft has `scorecard.total`, stars are `total / max * 5`, rounded to the nearest half star. When `max` is omitted, it is 45. A total of 41 is shown as `4.5 stars` and `41/45`, with the grade badge beside the stars. The badge uses `grade` when it says Ready, Needs work, Rework, or a letter (A is Ready, B is Needs work, C, D, or F is Rework). With no grade, 80% or more of `max` is Ready, 60% up to 80% is Needs work, and below 60% is Rework. If neither `overall` nor `total` is present, the badge is Needs work.
 
-Each category shows `N/10`, stars (`score / 10 * 5`, nearest half star), and its reason.
+Each category shows `N/10` (or `score/max`), stars (`score / max * 5`, nearest half star), and its one-line reason. The star icons use an accessible name such as `4.5 out of 5 stars`.
 
 ### Review screen
 

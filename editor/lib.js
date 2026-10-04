@@ -86,6 +86,25 @@
     return Math.round(n);
   }
 
+  function formatScore(n) {
+    var value = Number(n);
+    if (!Number.isFinite(value)) return "";
+    if (Math.abs(value - Math.round(value)) < 1e-9) return String(Math.round(value));
+    return String(Math.round(value * 10) / 10);
+  }
+
+  function pointsScore(scorecard) {
+    var sc = scorecard || {};
+    var overall = overallScore(sc);
+    if (overall != null) return { score: overall, max: scoreMax(sc), kind: "overall" };
+    if (sc.total == null || sc.total === "") return null;
+    var total = Number(sc.total);
+    if (!Number.isFinite(total)) return null;
+    var max = Number(sc.max);
+    if (!Number.isFinite(max) || max <= 0) max = 45;
+    return { score: total, max: max, kind: "total" };
+  }
+
   function categoryScore(scorecard, name) {
     var cats = scorecard && Array.isArray(scorecard.categories) ? scorecard.categories : [];
     var want = String(name || "").toLowerCase();
@@ -110,17 +129,48 @@
     return half;
   }
 
-  function starLabel(count) {
+  function starNumber(count) {
     if (count == null || !Number.isFinite(Number(count))) return "";
     var n = Number(count);
-    var text = n % 1 === 0 ? String(n) : n.toFixed(1);
+    return n % 1 === 0 ? String(n) : n.toFixed(1);
+  }
+
+  function starLabel(count) {
+    var text = starNumber(count);
+    if (!text) return "";
     return text + " out of 5 stars";
+  }
+
+  function starPhrase(count) {
+    var text = starNumber(count);
+    if (!text) return "";
+    return text + (Number(count) === 1 ? " star" : " stars");
+  }
+
+  function gradeBadge(scorecard) {
+    var grade = String((scorecard && scorecard.grade) || "").trim().toLowerCase();
+    if (!grade) return null;
+    if (grade === "ready" || grade.charAt(0) === "a") return { key: "ready", label: "Ready" };
+    if (grade === "rework" || /^[cdf]/.test(grade)) return { key: "rework", label: "Rework" };
+    if (grade === "needs work" || grade === "needs-work" || grade.indexOf("needs") === 0 || grade.charAt(0) === "b") {
+      return { key: "needs-work", label: "Needs work" };
+    }
+    return null;
   }
 
   function badgeFor(scorecard) {
     var sc = scorecard || {};
     var overall = overallScore(sc);
-    if (overall == null) return { key: "needs-work", label: "Needs work" };
+    if (overall == null) {
+      var named = gradeBadge(sc);
+      if (named) return named;
+      var points = pointsScore(sc);
+      if (!points) return { key: "needs-work", label: "Needs work" };
+      var ratio = points.score / points.max;
+      if (ratio >= 0.8) return { key: "ready", label: "Ready" };
+      if (ratio >= 0.6) return { key: "needs-work", label: "Needs work" };
+      return { key: "rework", label: "Rework" };
+    }
     var accuracy = categoryScore(sc, "accuracy");
     var info = categoryScore(sc, "information gain");
     if (info == null) info = categoryScore(sc, "info gain");
@@ -454,9 +504,12 @@
     liveUrl: liveUrl,
     scoreMax: scoreMax,
     overallScore: overallScore,
+    formatScore: formatScore,
+    pointsScore: pointsScore,
     categoryScore: categoryScore,
     starCount: starCount,
     starLabel: starLabel,
+    starPhrase: starPhrase,
     badgeFor: badgeFor,
     stringList: stringList,
     uniquePoints: uniquePoints,

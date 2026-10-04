@@ -61,8 +61,29 @@ assert.strictEqual(lib.starCount(8, 10), 4);
 assert.strictEqual(lib.starCount(9, 10), 4.5);
 assert.strictEqual(lib.starCount(7, 10), 3.5);
 assert.strictEqual(lib.starCount(10, 10), 5);
+assert.strictEqual(lib.starCount(41, 45), 4.5);
+assert.strictEqual(lib.starCount(45, 45), 5);
+assert.strictEqual(lib.starCount(32, 45), 3.5);
+assert.strictEqual(lib.starCount(0, 45), 0);
+assert.deepStrictEqual(lib.pointsScore({ total: 41 }), { score: 41, max: 45, kind: "total" });
+assert.deepStrictEqual(lib.pointsScore({ total: 41, max: 45 }), { score: 41, max: 45, kind: "total" });
+assert.deepStrictEqual(lib.pointsScore({ overall: 8, total: 41 }), { score: 8, max: 10, kind: "overall" });
+assert.strictEqual(lib.starPhrase(4.5), "4.5 stars");
+assert.strictEqual(lib.starPhrase(4), "4 stars");
+assert.strictEqual(lib.starPhrase(1), "1 star");
 assert.strictEqual(lib.starLabel(4), "4 out of 5 stars");
 assert.strictEqual(lib.starLabel(4.5), "4.5 out of 5 stars");
+assert.deepStrictEqual(lib.badgeFor({ total: 41, grade: "A" }), { key: "ready", label: "Ready" });
+assert.deepStrictEqual(lib.badgeFor({ total: 30, grade: "Needs work" }), { key: "needs-work", label: "Needs work" });
+assert.deepStrictEqual(lib.badgeFor({ total: 40, grade: "Rework" }), { key: "rework", label: "Rework" });
+assert.deepStrictEqual(lib.badgeFor({ total: 41 }), { key: "ready", label: "Ready" });
+assert.deepStrictEqual(lib.badgeFor({ total: 27 }), { key: "needs-work", label: "Needs work" });
+assert.deepStrictEqual(lib.badgeFor({ total: 20 }), { key: "rework", label: "Rework" });
+assert.deepStrictEqual(lib.badgeFor({ overall: 5, max: 10, grade: "Ready", categories: [
+  { name: "Accuracy", score: 10, max: 10 },
+  { name: "Information gain", score: 10, max: 10 },
+  { name: "Human voice", score: 10, max: 10 }
+] }), { key: "rework", label: "Rework" });
 assert.strictEqual(lib.firstSentence("A quieter morning. The rest stays back."), "A quieter morning.");
 assert.deepStrictEqual(lib.uniquePoints({ unique: ["Our chart", ""] }), ["Our chart"]);
 assert.strictEqual(lib.articleSummary({ summary: " Two sentences. More. " }), "Two sentences. More.");
