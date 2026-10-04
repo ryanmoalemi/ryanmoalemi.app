@@ -43,7 +43,12 @@
     ".rm-menu { position: fixed; z-index: 8; background: #fff; color: #111; border: 1px solid rgba(15, 23, 42, 0.15); border-radius: 10px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16); min-width: 12rem; padding: 0.3rem; }",
     ".rm-menu button { display: block; width: 100%; text-align: left; background: transparent; border: 0; min-height: 36px; padding: 0 0.55rem; }",
     "body.rm-preview .rm-chrome, body.rm-preview .rm-plus, body.rm-preview .rm-menu { display: none !important; }",
-    "body.rm-preview .rm-block { display: contents; }"
+    "body.rm-preview .rm-block { display: contents; }",
+    "body:not(.rm-preview)[data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]), body:not(.rm-preview) [data-rm-keep] > :not([data-rm-keep]):not([data-rm-root]) { display: none !important; }",
+    "@media (max-width: 900px) {",
+    "body.rm-preview nav.site-nav:not(.is-open) > ul { display: none !important; }",
+    "body.rm-preview nav.site-nav.is-open > ul { display: block !important; }",
+    "}"
   ].join("\n");
 
   function el(tag, attrs, kids) {
@@ -527,6 +532,57 @@
     throw last || new Error("Could not load " + hero);
   }
 
+  function markArticleChrome(root) {
+    if (!root) return;
+    root.setAttribute("data-rm-root", "1");
+    var node = root.parentElement;
+    while (node) {
+      node.setAttribute("data-rm-keep", "1");
+      node = node.parentElement;
+    }
+  }
+
+  function bindSiteNav(doc) {
+    if (!doc || !doc.documentElement || doc.documentElement.getAttribute("data-rm-nav")) return;
+    var nav = doc.querySelector("nav.site-nav");
+    if (!nav) return;
+    var button = nav.querySelector(".site-nav-toggle");
+    if (!button) return;
+    doc.documentElement.setAttribute("data-rm-nav", "1");
+    function setOpen(open) {
+      nav.classList.toggle("is-open", open);
+      button.setAttribute("aria-expanded", open ? "true" : "false");
+      var label = button.querySelector(".site-nav-toggle-label");
+      if (label) label.textContent = open ? "Close" : "Menu";
+      if (!open) {
+        Array.prototype.forEach.call(nav.querySelectorAll("li.is-open"), function (item) {
+          item.classList.remove("is-open");
+          var control = item.querySelector(".site-nav-subtoggle");
+          if (control) control.setAttribute("aria-expanded", "false");
+        });
+      }
+    }
+    button.addEventListener("click", function () {
+      setOpen(!nav.classList.contains("is-open"));
+    });
+    nav.addEventListener("click", function (event) {
+      var target = event.target;
+      var control = target && target.closest ? target.closest(".site-nav-subtoggle") : null;
+      if (!control || !nav.contains(control)) return;
+      var item = control.parentNode;
+      var open = !item.classList.contains("is-open");
+      Array.prototype.forEach.call(nav.querySelectorAll("li.is-open"), function (node) {
+        if (node !== item) {
+          node.classList.remove("is-open");
+          var other = node.querySelector(".site-nav-subtoggle");
+          if (other) other.setAttribute("aria-expanded", "false");
+        }
+      });
+      item.classList.toggle("is-open", open);
+      control.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
   function stripActive(doc) {
     doc.querySelectorAll("script, base, meta[http-equiv]").forEach(function (node) { node.remove(); });
     doc.querySelectorAll("*").forEach(function (node) {
@@ -650,6 +706,7 @@
       }
     }
     var root = window.RMRoundtrip.editableRoot(preview);
+    markArticleChrome(root);
     if (preserves.ok) {
       root.innerHTML = '<div id="rm-mount"></div>';
       var hero = sess.draft.meta && sess.draft.meta.hero_image;
@@ -1016,6 +1073,7 @@
     var frame = document.getElementById("preview");
     if (frame && frame.contentDocument && frame.contentDocument.body) {
       frame.contentDocument.body.classList.toggle("rm-preview", !!on);
+      if (on) bindSiteNav(frame.contentDocument);
     }
     var button = document.getElementById("preview-live");
     if (button) button.setAttribute("aria-pressed", on ? "true" : "false");
@@ -1190,6 +1248,7 @@
     Array.prototype.forEach.call(doc.images || [], function (img) {
       img.addEventListener("load", function () { fitIframe(frame); });
     });
+    bindSiteNav(doc);
     fitIframe(frame);
     window.setTimeout(function () { fitIframe(frame); }, 300);
   }
