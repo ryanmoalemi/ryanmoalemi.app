@@ -341,6 +341,75 @@ h1.display {
 .uniqueness .info-copy { margin: 0.55rem 0 0; }
 .review-grid { display: flex; flex-direction: column; gap: 1rem; }
 .preview-wrap { min-width: 0; }
+.side-stack { display: grid; gap: 0.8rem; align-content: start; }
+.editor-tools {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  margin: 0 0 0.7rem;
+  padding: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(12, 14, 20, 0.94);
+  backdrop-filter: blur(16px);
+}
+.tool, .tool-check {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  padding: 0.2rem 0.65rem;
+  font: 600 0.82rem/1.2 "DM Sans", system-ui, sans-serif;
+}
+.tool[aria-pressed="true"] {
+  color: #06120e;
+  background: var(--accent);
+  border-color: transparent;
+}
+.tool-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+.save-state {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.fields, .advanced {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 0.9rem 1rem 1rem;
+}
+.fields h2, .fields h3 { margin: 0.2rem 0 0.45rem; font-size: 1rem; }
+.fields h3 { margin-top: 0.85rem; }
+.field { display: grid; gap: 0.3rem; margin: 0 0 0.7rem; }
+.field input, .field textarea, .advanced textarea, .modal-card input[type="url"], .modal-card input[type="text"] {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.65rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font: 500 1rem/1.4 "DM Sans", system-ui, sans-serif;
+}
+.field textarea, .advanced textarea { min-height: 6.5rem; resize: vertical; }
+.advanced { margin-top: 0.7rem; }
+.advanced summary { cursor: pointer; font-weight: 700; }
+.advanced textarea { margin: 0.6rem 0; font-family: ui-monospace, monospace; font-size: 0.82rem; }
+.comment { margin: 0 0 0.7rem; padding-bottom: 0.55rem; border-bottom: 1px solid var(--line); }
+.comment p { margin: 0 0 0.3rem; }
+.comment-quote { color: var(--muted); font-style: italic; }
+.fine { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.85rem; }
 .file-switch { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
 .file-switch button {
   border: 1px solid var(--line);
@@ -489,7 +558,7 @@ h1.display {
     align-items: start;
   }
   .preview-wrap { grid-column: 1; grid-row: 1; }
-  .dashboard {
+  .side-stack {
     grid-column: 2;
     grid-row: 1;
     position: sticky;
