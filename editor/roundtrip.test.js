@@ -129,7 +129,53 @@ var browserJs = [
   "if (RMRoundtrip.serializeDoc(editor.getJSON()).indexOf('Check this line') !== -1) fail('comments must not be written into the page HTML');",
   "RMWord.toggleBold(editor);",
   "RMWord.undo(editor);",
+  "var loaded = RMRoundtrip.serializeDoc(editor.getJSON());",
+  "if (loaded.indexOf('Arena desk') === -1 || loaded.indexOf('https://example.com/credit') === -1) fail('caption was rewritten on load');",
+  "var figurePos = RMWord.listImages(editor)[0].pos;",
+  "RMWord.setFigureFields(editor, figurePos, { credit: '', source: '' });",
+  "var untouched = RMRoundtrip.serializeDoc(editor.getJSON());",
+  "if (untouched.indexOf('Arena desk') === -1) fail('empty credit rewrote the caption');",
+  "RMWord.setFigureFields(editor, figurePos, { alt: 'Night arena', width: '800', height: '450', credit: 'Goldin', source: 'https://goldin.example/lot' });",
+  "var credited = RMRoundtrip.serializeDoc(editor.getJSON());",
+  "if (credited.indexOf('Arena desk') === -1) fail('credit removed the caption');",
+  "if (credited.indexOf('Goldin') === -1 || credited.indexOf('https://goldin.example/lot') === -1 || credited.indexOf('class=\"credit\"') === -1) fail('credit was not saved');",
+  "if (credited.indexOf('alt=\"Night arena\"') === -1 || credited.indexOf('width=\"800\"') === -1 || credited.indexOf('height=\"450\"') === -1) fail('image fields were not saved');",
+  "if (credited.indexOf('img/hero.webp') === -1) fail('image src changed');",
+  "var imgCount = (credited.match(/<img\\b/g) || []).length;",
+  "RMWord.moveBlock(editor, 0, 1);",
+  "if ((RMRoundtrip.serializeDoc(editor.getJSON()).match(/<img\\b/g) || []).length !== imgCount) fail('reorder dropped an image');",
+  "if (!RMWord.insertBlock(editor, 'quote', 0, 'after')) fail('could not insert a quote');",
+  "if (!RMWord.insertBlock(editor, 'table', 0, 'after')) fail('could not insert a table');",
+  "if (!RMWord.insertBlock(editor, 'cards', 0, 'after')) fail('could not insert a card grid');",
+  "if (!RMWord.insertBlock(editor, 'faq', 0, 'after')) fail('could not insert an FAQ');",
+  "var inserted = RMRoundtrip.serializeDoc(editor.getJSON());",
+  "if (inserted.indexOf('<blockquote>') === -1) fail('quote block missing');",
+  "if (inserted.indexOf('<table>') === -1) fail('table block missing');",
+  "if (inserted.indexOf('grid cards') === -1) fail('card grid missing');",
+  "if (inserted.indexOf('<details>') === -1 || inserted.indexOf('<summary>') === -1) fail('FAQ block missing');",
   "editor.destroy();",
+  "if (RMRoundtrip.nextUrlPath('/news/old-slug/', 'new-slug') !== '/news/new-slug/') fail('slug path');",
+  "if (RMRoundtrip.nextFilePath('news/old-slug/index.html', 'old-slug', 'new-slug') !== 'news/new-slug/index.html') fail('file path');",
+  "if (RMRoundtrip.nextFilePath('index.html', '', 'guide') !== 'index.html') fail('home file should stay put');",
+  "if (RMRoundtrip.uploadImagePath('news/old-slug/index.html', 'My Photo.PNG') !== 'news/old-slug/img/my-photo.webp') fail('upload path');",
+  "var faqHtml = '<!DOCTYPE html><html><head><script type=\"application/ld+json\">{\"@type\":\"WebSite\",\"name\":\"ADU\"}</' + 'script></head><body><main><section id=\"faq\"><h2>Common questions</h2><div class=\"grid cards\"><article class=\"card\"><h3>How much?</h3><p>It varies by lot.</p></article></div></section></main><script type=\"application/ld+json\">{\"@context\":\"https://schema.org\",\"@type\":\"FAQPage\",\"mainEntity\":[{\"@type\":\"Question\",\"name\":\"How much?\",\"acceptedAnswer\":{\"@type\":\"Answer\",\"text\":\"See the county fee schedule.\"}}]}</' + 'script></body></html>';",
+  "var faqTrip = roundTripInner(faqHtml);",
+  "var faqSame = RMRoundtrip.applyDocument(faqHtml, faqTrip.serialized, { faqs: RMRoundtrip.extractFragmentFaqs(faqTrip.serialized), originalFaqs: RMRoundtrip.extractFragmentFaqs(faqTrip.inner) });",
+  "if (faqSame.indexOf('See the county fee schedule.') === -1) fail('unchanged FAQ rewrote the search summary');",
+  "if (faqSame.indexOf('{\"@type\":\"WebSite\",\"name\":\"ADU\"}') === -1) fail('website summary changed');",
+  "var faqEdited = faqTrip.serialized.replace('It varies by lot.', 'It starts near 200000.');",
+  "var faqNext = RMRoundtrip.applyDocument(faqHtml, faqEdited, { faqs: RMRoundtrip.extractFragmentFaqs(faqEdited), originalFaqs: RMRoundtrip.extractFaqs(faqHtml) });",
+  "if (faqNext.indexOf('{\"@type\":\"WebSite\",\"name\":\"ADU\"}') === -1) fail('website summary was rewritten with the FAQ');",
+  "if (faqNext.indexOf('See the county fee schedule.') !== -1) fail('old FAQ answer was kept');",
+  "if (faqNext.indexOf('It starts near 200000.') === -1) fail('new FAQ answer was not saved');",
+  "var faqCheck = RMRoundtrip.fidelityCheck(faqHtml, faqNext, faqEdited);",
+  "if (!faqCheck.ok) fail(faqCheck.message);",
+  "var faqGone = faqEdited.replace(/<article class=\"card\">[\\s\\S]*?<\\/article>/, '');",
+  "var faqCleared = RMRoundtrip.applyDocument(faqHtml, faqGone, { faqs: RMRoundtrip.extractFragmentFaqs(faqGone), originalFaqs: RMRoundtrip.extractFaqs(faqHtml) });",
+  "if (faqCleared.indexOf('FAQPage') !== -1) fail('FAQ summary remained after the questions were removed');",
+  "if (faqCleared.indexOf('WebSite') === -1) fail('website summary was removed with the FAQ');",
+  "var faqClearCheck = RMRoundtrip.fidelityCheck(faqHtml, faqCleared, faqGone);",
+  "if (!faqClearCheck.ok) fail(faqClearCheck.message);",
   "document.documentElement.setAttribute('data-result', 'PASS ' + names.join(','));"
 ].join("\n");
 
@@ -149,10 +195,10 @@ try {
     "--headless=new",
     "--disable-gpu",
     "--no-sandbox",
-    "--virtual-time-budget=8000",
+    "--virtual-time-budget=20000",
     "--dump-dom",
     "file://" + file
-  ], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
+  ], { encoding: "utf8", timeout: 90000, stdio: ["ignore", "pipe", "ignore"] });
 } catch (err) {
   dump = err.stdout || "";
   if (String(dump).indexOf('data-result="PASS') === -1) throw err;
@@ -162,3 +208,36 @@ if (result.indexOf("PASS") !== 0) {
   throw new Error("round-trip tests failed: " + (result || "no result"));
 }
 console.log("round-trip tests passed (" + result.slice(5) + ")");
+
+var wordJs = fs.readFileSync(path.join(__dirname, "src/word.js"), "utf8");
+assert.ok(wordJs.indexOf('canvas.toBlob') > -1);
+assert.ok(wordJs.indexOf('"image/webp"') > -1);
+assert.ok(wordJs.indexOf("This browser could not make a WebP image.") > -1);
+var webpPage = "<!DOCTYPE html><meta charset=\"utf-8\"><script>" +
+  "var png = atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==');" +
+  "var bytes = new Uint8Array(png.length); for (var i = 0; i < png.length; i++) bytes[i] = png.charCodeAt(i);" +
+  "var url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));" +
+  "var img = new Image(); img.onload = function () {" +
+  "var canvas = document.createElement('canvas'); canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;" +
+  "canvas.getContext('2d').drawImage(img, 0, 0);" +
+  "canvas.toBlob(function (blob) {" +
+  "document.documentElement.setAttribute('data-result', blob && blob.type === 'image/webp' && canvas.width > 0 ? 'PASS webp ' + canvas.width + 'x' + canvas.height : 'FAIL webp');" +
+  "}, 'image/webp', 0.82); }; img.onerror = function () { document.documentElement.setAttribute('data-result', 'FAIL image'); }; img.src = url;</script>";
+var webpFile = path.join(os.tmpdir(), "editor-webp-test.html");
+fs.writeFileSync(webpFile, webpPage);
+var webpDump = "";
+try {
+  webpDump = execFileSync("google-chrome", [
+    "--headless=new",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--virtual-time-budget=3000",
+    "--dump-dom",
+    "file://" + webpFile
+  ], { encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "ignore"] });
+} catch (err) {
+  webpDump = err.stdout || "";
+}
+var webpResult = (String(webpDump).match(/data-result="([^"]+)"/) || [])[1] || "";
+if (webpResult.indexOf("PASS") !== 0) throw new Error("webp conversion failed: " + (webpResult || "no result"));
+console.log(webpResult);

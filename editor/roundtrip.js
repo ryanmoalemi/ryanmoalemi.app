@@ -548,6 +548,15 @@
         next = replaceMetaContent(next, "name", "twitter:title", twNext);
       }
     }
+    if (updates.faqs && !sameFaqs(updates.originalFaqs || [], updates.faqs)) {
+      var hadFaq = jsonLd(parseHtml(next)).some(scriptIsFaq);
+      if (hadFaq) next = replaceFaqScripts(next, updates.faqs);
+      else next = insertFaqScript(next, updates.faqs);
+    }
+    if (updates.heroSrc) {
+      next = replaceMetaContent(next, "property", "og:image", updates.heroSrc);
+      next = replaceMetaContent(next, "name", "twitter:image", updates.heroSrc);
+    }
     return next;
   }
 
@@ -624,6 +633,223 @@
     return inventoryElement(doc.body);
   }
 
+  function normFaq(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
+  }
+
+  function inFaqRegion(el) {
+    var node = el;
+    while (node && node.nodeType === 1) {
+      var id = (node.getAttribute("id") || "").toLowerCase();
+      var cls = (node.getAttribute("class") || "").toLowerCase();
+      if (id === "faq" || id.indexOf("faq") !== -1 || /(^|\s)faq(\s|$)/.test(cls)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function faqPairsFromRoot(root) {
+    var pairs = [];
+    if (!root || !root.querySelectorAll) return pairs;
+    Array.prototype.forEach.call(root.querySelectorAll("article"), function (card) {
+      var cls = (card.getAttribute("class") || "").split(/\s+/);
+      if (cls.indexOf("card") === -1 || !inFaqRegion(card)) return;
+      var heading = card.querySelector("h2, h3, h4");
+      if (!heading) return;
+      var answer = [];
+      Array.prototype.forEach.call(card.querySelectorAll("p"), function (para) {
+        answer.push(para.textContent || "");
+      });
+      pairs.push({ q: normFaq(heading.textContent), a: normFaq(answer.join(" ")) });
+    });
+    Array.prototype.forEach.call(root.querySelectorAll("details"), function (item) {
+      var summary = item.querySelector("summary");
+      if (!summary) return;
+      var clone = item.cloneNode(true);
+      var copySummary = clone.querySelector("summary");
+      if (copySummary) copySummary.remove();
+      var paras = clone.querySelectorAll("p, li");
+      var answer = paras.length
+        ? Array.prototype.map.call(paras, function (el) { return el.textContent || ""; }).join(" ")
+        : clone.textContent;
+      pairs.push({ q: normFaq(summary.textContent), a: normFaq(answer) });
+    });
+    return pairs;
+  }
+
+  function extractFaqs(html) {
+    var doc = parseHtml(html);
+    return faqPairsFromRoot(editableRoot(doc));
+  }
+
+  function extractFragmentFaqs(fragmentHtml) {
+    var doc = parseHtml("<!DOCTYPE html><html><body>" + String(fragmentHtml || "") + "</body></html>");
+    return faqPairsFromRoot(doc.body);
+  }
+
+  function sameFaqs(a, b) {
+    return JSON.stringify(a || []) === JSON.stringify(b || []);
+  }
+
+  function parseLd(text) {
+    try { return JSON.parse(text); }
+    catch (err) { return null; }
+  }
+
+  function ldTypeName(node) {
+    if (!node) return "";
+    var kind = node["@type"];
+    if (Array.isArray(kind)) return kind.join(" ");
+    return String(kind || "");
+  }
+
+  function isFaqNode(node) {
+    return ldTypeName(node).indexOf("FAQPage") !== -1;
+  }
+
+  function scriptIsFaq(text) {
+    var data = parseLd(text);
+    if (!data) return false;
+    if (isFaqNode(data)) return true;
+    return !!(data["@graph"] && Array.isArray(data["@graph"]) && data["@graph"].some(isFaqNode));
+  }
+
+  function faqQuestions(text) {
+    var data = parseLd(text);
+    if (!data) return [];
+    var pages = [];
+    if (isFaqNode(data)) pages.push(data);
+    if (Array.isArray(data["@graph"])) data["@graph"].forEach(function (node) { if (isFaqNode(node)) pages.push(node); });
+    var pairs = [];
+    pages.forEach(function (page) {
+      var list = page.mainEntity || [];
+      if (!Array.isArray(list)) list = [list];
+      list.forEach(function (item) {
+        if (!item) return;
+        var answer = item.acceptedAnswer || {};
+        if (Array.isArray(answer)) answer = answer[0] || {};
+        pairs.push({ q: normFaq(item.name), a: normFaq(answer.text || "") });
+      });
+    });
+    return pairs;
+  }
+
+  function faqMainEntity(pairs) {
+    return (pairs || []).map(function (pair) {
+      return {
+        "@type": "Question",
+        name: pair.q,
+        acceptedAnswer: { "@type": "Answer", text: pair.a }
+      };
+    });
+  }
+
+  function syncFaqScript(text, pairs) {
+    var data = parseLd(text);
+    if (!data) return text;
+    var next = JSON.parse(JSON.stringify(data));
+    if (isFaqNode(next)) {
+      if (!pairs.length) return null;
+      next.mainEntity = faqMainEntity(pairs);
+      return JSON.stringify(next);
+    }
+    if (Array.isArray(next["@graph"])) {
+      var graph = [];
+      next["@graph"].forEach(function (node) {
+        if (!isFaqNode(node)) {
+          graph.push(node);
+          return;
+        }
+        if (!pairs.length) return;
+        var copy = JSON.parse(JSON.stringify(node));
+        copy.mainEntity = faqMainEntity(pairs);
+        graph.push(copy);
+      });
+      if (!graph.length) return null;
+      next["@graph"] = graph;
+      return JSON.stringify(next);
+    }
+    return text;
+  }
+
+  function replaceFaqScripts(html, pairs) {
+    return String(html || "").replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, function (full, attrs, body) {
+      if (!/application\/ld\+json/i.test(attrs)) return full;
+      if (!scriptIsFaq(body.trim())) return full;
+      var updated = syncFaqScript(body.trim(), pairs);
+      if (updated == null) return "";
+      return "<script" + attrs + ">" + updated + "<" + "/script>";
+    });
+  }
+
+  function insertFaqScript(html, pairs) {
+    if (!pairs || !pairs.length) return html;
+    var block = '<script type="application/ld+json">' + JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      mainEntity: faqMainEntity(pairs)
+    }) + "<" + "/script>";
+    if (html.indexOf("</head>") !== -1) return html.replace("</head>", block + "</head>");
+    return html + block;
+  }
+
+  function nonFaqFingerprints(texts) {
+    var out = [];
+    (texts || []).forEach(function (text) {
+      if (!scriptIsFaq(text)) {
+        out.push(String(text));
+        return;
+      }
+      var data = parseLd(text);
+      if (!data || !Array.isArray(data["@graph"])) return;
+      data["@graph"].forEach(function (node) {
+        if (!isFaqNode(node)) out.push(JSON.stringify(node));
+      });
+    });
+    return out;
+  }
+
+  function faqJsonMiss(origTexts, nextTexts, origFaqs, nextFaqs) {
+    if (sameFaqs(origFaqs, nextFaqs)) return missingCount(origTexts, nextTexts);
+    var miss = missingCount(nonFaqFingerprints(origTexts), nonFaqFingerprints(nextTexts));
+    var nextFaqTexts = (nextTexts || []).filter(scriptIsFaq);
+    var origFaqTexts = (origTexts || []).filter(scriptIsFaq);
+    if ((nextFaqs || []).length && origFaqTexts.length) {
+      if (!nextFaqTexts.length) miss += 1;
+      else {
+        var got = [];
+        nextFaqTexts.forEach(function (text) { got = got.concat(faqQuestions(text)); });
+        if (!sameFaqs(nextFaqs, got)) miss += 1;
+      }
+    }
+    return miss;
+  }
+
+  function nextUrlPath(urlPath, slug) {
+    var raw = String(slug || "").trim().replace(/^\/+|\/+$/g, "").replace(/\s+/g, "-").toLowerCase();
+    var parts = String(urlPath || "").split("/").filter(function (part) { return part.length; });
+    if (!raw) return parts.length ? "/" + parts.join("/") + "/" : "/";
+    if (!parts.length) return "/" + raw + "/";
+    parts[parts.length - 1] = raw;
+    return "/" + parts.join("/") + "/";
+  }
+
+  function nextFilePath(filePath, oldSlug, newSlug) {
+    if (!oldSlug || !newSlug || oldSlug === newSlug) return filePath;
+    var parts = String(filePath || "").split("/");
+    var idx = parts.indexOf(oldSlug);
+    if (idx === -1) return filePath;
+    parts[idx] = newSlug;
+    return parts.join("/");
+  }
+
+  function uploadImagePath(articlePath, filename) {
+    var dir = String(articlePath || "").split("/").slice(0, -1).filter(Boolean).join("/");
+    var base = String(filename || "image").toLowerCase().replace(/\.[a-z0-9]+$/i, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!base) base = "image";
+    return (dir ? dir + "/img/" : "img/") + base + ".webp";
+  }
+
   function fidelityCheck(originalHtml, nextHtml, editorFragmentHtml) {
     var editorInv = fragmentInventory(editorFragmentHtml);
     var nextDoc = parseHtml(nextHtml);
@@ -636,7 +862,7 @@
     var figureMiss = missingCount(editorInv.figures, nextInv.figures);
     var tableMiss = missingCount(editorInv.tables, nextInv.tables);
     var linkMiss = missingCount(editorInv.links, nextInv.links);
-    var jsonMiss = missingCount(jsonLd(origDoc), jsonLd(nextDoc));
+    var jsonMiss = faqJsonMiss(jsonLd(origDoc), jsonLd(nextDoc), faqPairsFromRoot(editableRoot(origDoc)), faqPairsFromRoot(nextRoot));
     if (imageMiss) bits.push(phrase(imageMiss, "a photo", "photos"));
     if (captionMiss) bits.push(phrase(captionMiss, "a photo credit", "photo credits"));
     if (figureMiss && !imageMiss) bits.push(phrase(figureMiss, "a captioned photo", "captioned photos"));
@@ -664,7 +890,7 @@
       });
     }
     if (missingCount(outside(origDoc, origRoot, "img"), outside(nextDoc, nextRoot, "img"))) return false;
-    if (missingCount(jsonLd(origDoc), jsonLd(nextDoc))) return false;
+    if (faqJsonMiss(jsonLd(origDoc), jsonLd(nextDoc), faqPairsFromRoot(origRoot), faqPairsFromRoot(nextRoot))) return false;
     return true;
   }
 
@@ -906,7 +1132,12 @@
     jsonLd: jsonLd,
     diffHtml: diffHtml,
     inlinePlain: inlinePlain,
-    collectTextBlocks: collectTextBlocks
+    collectTextBlocks: collectTextBlocks,
+    extractFaqs: extractFaqs,
+    extractFragmentFaqs: extractFragmentFaqs,
+    nextUrlPath: nextUrlPath,
+    nextFilePath: nextFilePath,
+    uploadImagePath: uploadImagePath
   };
 
   root.RMRoundtrip = api;

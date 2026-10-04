@@ -22,7 +22,7 @@
 
   var PREVIEW_CSS = [
     "#rm-mount, .ProseMirror { min-height: 8rem; }",
-    ".ProseMirror { outline: none; }",
+    ".ProseMirror { outline: none; white-space: pre-wrap; }",
     ".ProseMirror:focus { outline: none; }",
     ".rm-ins { background: rgba(70, 180, 90, 0.28); border-radius: 2px; }",
     ".rm-del { background: rgba(210, 50, 50, 0.2); text-decoration: line-through; border-radius: 2px; }",
@@ -30,7 +30,20 @@
     "#rm-diff .rm-ins { box-decoration-break: clone; }",
     "[data-rm-hero] { margin: 0 0 1rem; }",
     "[data-rm-hero] img { width: 100%; height: auto; display: block; }",
-    "[data-rm-raw] { user-select: none; }"
+    "[data-rm-raw] { user-select: none; }",
+    ".rm-block { position: relative; }",
+    ".rm-chrome { display: flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; margin: 0 0 0.2rem; }",
+    ".rm-chrome button, .rm-plus, .rm-menu button { font: 12px/1.2 system-ui, sans-serif; color: #172033; }",
+    ".rm-block-btn, .rm-plus { min-height: 32px; min-width: 32px; padding: 0 0.45rem; border: 1px solid rgba(15, 23, 42, 0.18); background: #fff; border-radius: 6px; }",
+    ".rm-label { font: 600 11px/1 system-ui, sans-serif; letter-spacing: 0.04em; text-transform: uppercase; color: #334155; margin-right: 0.15rem; }",
+    ".rm-fields { display: flex; flex-wrap: wrap; gap: 0.35rem; width: 100%; }",
+    ".rm-fields label, .rm-upload { display: grid; gap: 0.12rem; font: 12px system-ui, sans-serif; color: #1e293b; min-width: 8rem; }",
+    ".rm-fields input, .rm-file { min-height: 32px; font: 14px system-ui, sans-serif; color: #111; background: #fff; border: 1px solid rgba(15, 23, 42, 0.2); border-radius: 6px; padding: 0.15rem 0.4rem; }",
+    ".rm-plus { display: block; margin: 0.15rem auto 0.35rem; }",
+    ".rm-menu { position: fixed; z-index: 8; background: #fff; color: #111; border: 1px solid rgba(15, 23, 42, 0.15); border-radius: 10px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16); min-width: 12rem; padding: 0.3rem; }",
+    ".rm-menu button { display: block; width: 100%; text-align: left; background: transparent; border: 0; min-height: 36px; padding: 0 0.55rem; }",
+    "body.rm-preview .rm-chrome, body.rm-preview .rm-plus, body.rm-preview .rm-menu { display: none !important; }",
+    "body.rm-preview .rm-block { display: contents; }"
   ].join("\n");
 
   function el(tag, attrs, kids) {
@@ -556,11 +569,14 @@
     var titleInput = document.getElementById("field-title");
     var descInput = document.getElementById("field-description");
     try {
+      var slugInput = document.getElementById("field-slug");
       localStorage.setItem(key, JSON.stringify({
         savedAt: new Date().toISOString(),
         sha: state.draft.sha,
         title: titleInput ? titleInput.value : "",
         description: descInput ? descInput.value : "",
+        slug: slugInput ? slugInput.value : "",
+        hero: session.heroPath || "",
         doc: session.editor.getJSON()
       }));
       setSaveState("Saved");
@@ -786,6 +802,7 @@
     }
     refreshAlts();
     refreshComments();
+    refreshPostFields();
     refreshTools();
     scheduleAutosave();
     if (session.showEdits) paintDiff();
@@ -822,6 +839,258 @@
     editorDom.hidden = true;
   }
 
+  function paintCounts() {
+    var title = document.getElementById("field-title");
+    var description = document.getElementById("field-description");
+    var titleCount = document.getElementById("title-count");
+    var descCount = document.getElementById("desc-count");
+    if (title && titleCount) {
+      var titleLength = title.value.trim().length;
+      titleCount.textContent = titleLength + "/60";
+      titleCount.classList.toggle("over", titleLength > 60);
+    }
+    if (description && descCount) {
+      var descLength = description.value.trim().length;
+      descCount.textContent = descLength + "/155";
+      descCount.classList.toggle("over", descLength > 155);
+    }
+  }
+
+  function publicSrc(repoPath) {
+    var path = String(repoPath || "");
+    if (!path) return "";
+    if (/^https?:\/\//i.test(path)) return path;
+    return "/" + path.replace(/^\/+/, "");
+  }
+
+  function paintHero() {
+    var img = document.getElementById("hero-preview");
+    if (!img || !session) return;
+    var hero = session.heroPath || "";
+    var src = "";
+    Object.keys(session.srcMap || {}).forEach(function (key) {
+      if (!src && pathsMatch(key, hero)) src = session.srcMap[key];
+    });
+    if (src) img.src = src;
+    else img.removeAttribute("src");
+  }
+
+  function fillPostFields(saved) {
+    if (!session || !session.editor || !window.RMWord.readPostFields) return;
+    var meta = window.RMWord.readPostFields(session.editor);
+    session.postMeta = meta;
+    var slug = document.getElementById("field-slug");
+    var author = document.getElementById("field-author");
+    var date = document.getElementById("field-date");
+    var category = document.getElementById("field-category");
+    var tags = document.getElementById("field-tags");
+    var categoryWrap = document.getElementById("category-wrap");
+    var tagsWrap = document.getElementById("tags-wrap");
+    if (slug && document.activeElement !== slug) slug.value = saved && saved.slug != null ? saved.slug : (session.remoteSlug || "");
+    if (author && document.activeElement !== author) author.value = meta.hasAuthor ? meta.author : "Ryan Moalemi";
+    if (date && document.activeElement !== date) date.value = meta.hasDate ? meta.date : "";
+    if (category && categoryWrap) {
+      categoryWrap.hidden = !meta.hasCategory;
+      if (document.activeElement !== category) category.value = meta.category || "";
+    }
+    if (tags && tagsWrap) {
+      tagsWrap.hidden = !meta.hasTags;
+      if (document.activeElement !== tags) tags.value = (meta.tags || []).join(", ");
+    }
+    if (saved && saved.hero) session.heroPath = saved.hero;
+    paintHero();
+    paintCounts();
+  }
+
+  function refreshPostFields() {
+    if (!session || !session.editor || session.metaLock || !window.RMWord.readPostFields) return;
+    var meta = window.RMWord.readPostFields(session.editor);
+    session.postMeta = meta;
+    var author = document.getElementById("field-author");
+    if (author && document.activeElement !== author && meta.hasAuthor) author.value = meta.author;
+    var date = document.getElementById("field-date");
+    if (date && document.activeElement !== date && meta.hasDate) date.value = meta.date;
+    var category = document.getElementById("field-category");
+    if (category && document.activeElement !== category && meta.hasCategory) category.value = meta.category;
+    paintCounts();
+  }
+
+  function openSlashMenu(view, pos, place) {
+    if (!session || !session.editor) return;
+    var doc = view.dom.ownerDocument;
+    var old = doc.getElementById("rm-menu");
+    if (old) old.remove();
+    var menu = doc.createElement("div");
+    menu.id = "rm-menu";
+    menu.className = "rm-menu";
+    [
+      ["paragraph", "Paragraph"],
+      ["h2", "Heading 2"],
+      ["h3", "Heading 3"],
+      ["image", "Image"],
+      ["table", "Table"],
+      ["quote", "Quote"],
+      ["ul", "Bulleted list"],
+      ["ol", "Numbered list"],
+      ["cards", "Card grid"],
+      ["faq", "FAQ"]
+    ].forEach(function (item) {
+      var button = doc.createElement("button");
+      button.type = "button";
+      button.textContent = item[1];
+      button.addEventListener("click", function () {
+        window.RMWord.insertBlock(session.editor, item[0], pos, place || "after");
+        menu.remove();
+        state.dirty = true;
+        scheduleAutosave();
+      });
+      menu.appendChild(button);
+    });
+    var coords = view.coordsAtPos(Math.min(pos + 1, view.state.doc.content.size));
+    menu.style.left = Math.max(8, coords.left) + "px";
+    menu.style.top = (coords.bottom + 6) + "px";
+    doc.body.appendChild(menu);
+    function close(event) {
+      if (menu.contains(event.target)) return;
+      menu.remove();
+      doc.removeEventListener("mousedown", close);
+    }
+    window.setTimeout(function () { doc.addEventListener("mousedown", close); }, 0);
+  }
+
+  async function uploadImageFile(file, target) {
+    if (!session || !state.draft || !file) return;
+    if (lock) return;
+    lock = true;
+    state.busy = "Saving…";
+    state.error = "";
+    paintStatus();
+    try {
+      var encoded = await window.RMWord.encodeImageFile(file);
+      var repoPath = window.RMRoundtrip.uploadImagePath(session.activePath, file.name || "image");
+      var sha = await commitFiles(state.draft.headRepo, state.draft.branch, [{
+        path: repoPath,
+        content: encoded.base64,
+        encoding: "base64"
+      }]);
+      state.draft.sha = sha;
+      var src = publicSrc(repoPath);
+      if (encoded.blob) {
+        var blobUrl = URL.createObjectURL(encoded.blob);
+        session.blobs.push(blobUrl);
+        session.srcMap[src] = blobUrl;
+      }
+      if (target && target.hero) {
+        var previous = session.heroPath || "";
+        session.heroPath = repoPath;
+        if (previous) {
+          window.RMWord.replaceImageSrc(session.editor, previous, {
+            src: src,
+            width: String(encoded.width),
+            height: String(encoded.height)
+          });
+        }
+        paintHero();
+      } else if (target && typeof target.pos === "number") {
+        window.RMWord.setFigureFields(session.editor, target.pos, {
+          src: src,
+          width: String(encoded.width),
+          height: String(encoded.height)
+        });
+      }
+      state.dirty = true;
+      state.notice = "Image saved on the branch.";
+      scheduleAutosave();
+    } catch (err) {
+      state.error = err.message;
+      state.notice = "";
+    } finally {
+      lock = false;
+      state.busy = "";
+      paintStatus();
+    }
+  }
+
+  function setPreviewMode(on) {
+    document.body.classList.toggle("live-preview", !!on);
+    var frame = document.getElementById("preview");
+    if (frame && frame.contentDocument && frame.contentDocument.body) {
+      frame.contentDocument.body.classList.toggle("rm-preview", !!on);
+    }
+    var button = document.getElementById("preview-live");
+    if (button) button.setAttribute("aria-pressed", on ? "true" : "false");
+    var tools = document.getElementById("preview-tools");
+    if (tools) tools.hidden = !on;
+    if (frame) fitIframe(frame);
+  }
+
+  function setPhonePreview(on) {
+    document.body.classList.toggle("phone-preview", !!on);
+    var desk = document.getElementById("preview-desktop");
+    var phone = document.getElementById("preview-phone");
+    if (desk) desk.setAttribute("aria-pressed", on ? "false" : "true");
+    if (phone) phone.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+
+  async function openRevisions() {
+    if (!state.draft || !session || state.busy) return;
+    state.busy = "Loading…";
+    state.error = "";
+    paintStatus();
+    try {
+      var commits = await apiJson("/repos/" + state.draft.headRepo + "/commits?sha=" + encodeURIComponent(state.draft.branch) + "&path=" + encodeURIComponent(session.activePath) + "&per_page=20");
+      state.busy = "";
+      paintStatus();
+      if (!Array.isArray(commits) || !commits.length) {
+        state.notice = "No earlier revisions on this branch.";
+        paintStatus();
+        return;
+      }
+      var picked = await openModal(function (card, close) {
+        card.append(el("h2", {}, "Revisions"));
+        var list = el("div", { class: "revision-list" });
+        commits.forEach(function (commit) {
+          var message = ((commit.commit && commit.commit.message) || "Revision").split("\n")[0];
+          var when = "";
+          try { when = new Date(commit.commit.author.date).toLocaleString(); }
+          catch (err) { when = ""; }
+          var button = el("button", { type: "button", class: "btn ghost revision" }, message);
+          button.append(el("span", { class: "field-hint" }, when));
+          button.addEventListener("click", function () { close(commit.sha); });
+          list.append(button);
+        });
+        card.append(list, el("div", { class: "modal-actions" }, [
+          el("button", { class: "btn ghost", type: "button", id: "modal-cancel" }, "Close")
+        ]));
+        card.querySelector("#modal-cancel").addEventListener("click", function () { close(null); });
+      });
+      if (picked) await restoreRevision(picked);
+    } catch (err) {
+      state.busy = "";
+      state.error = err.message;
+      paintStatus();
+    }
+  }
+
+  async function restoreRevision(sha) {
+    var html = await textAt(state.draft.headRepo, session.activePath, sha);
+    var parsed = window.RMRoundtrip.parseHtml(html);
+    var address = window.RMRoundtrip.rootAddress(parsed);
+    var inner = window.RMRoundtrip.extractInner(html, address.tag, address.index);
+    var json = window.RMRoundtrip.parseFragment(inner);
+    session.editor.commands.setContent(json);
+    var base = baselineFrom(html);
+    var title = document.getElementById("field-title");
+    var description = document.getElementById("field-description");
+    if (title) title.value = base.h1;
+    if (description) description.value = base.description;
+    fillPostFields(null);
+    state.dirty = true;
+    state.notice = "Revision loaded. Save draft to keep it.";
+    scheduleAutosave();
+    paintStatus();
+  }
+
   function mountEditor(frame, prepared) {
     var doc = frame.contentDocument;
     var file = session.files[session.activePath];
@@ -855,7 +1124,7 @@
       try {
         var remoteHtml = window.RMRoundtrip.serializeDoc(prepared.json);
         var savedHtml = window.RMRoundtrip.serializeDoc(saved.doc);
-        if (savedHtml !== remoteHtml || (saved.title || "") !== file.remoteTitle || (saved.description || "") !== file.remoteDescription) {
+        if (savedHtml !== remoteHtml || (saved.title || "") !== file.remoteTitle || (saved.description || "") !== file.remoteDescription || (saved.slug || "") !== (session.remoteSlug || "") || (saved.hero || "") !== (session.remoteHero || "")) {
           docJson = saved.doc;
           restored = true;
         }
@@ -869,7 +1138,9 @@
         doc: doc,
         resolveSrc: function (src) { return (session.srcMap && session.srcMap[src]) || src; },
         onUpdate: onEditorUpdate,
-        onSelection: refreshTools
+        onSelection: refreshTools,
+        onSlash: openSlashMenu,
+        onImageFile: function (file, pos) { uploadImageFile(file, { pos: pos }); }
       });
     }
     try {
@@ -901,6 +1172,8 @@
     if (descInput) {
       descInput.value = restored && saved && saved.description != null ? saved.description : file.remoteDescription;
     }
+    fillPostFields(restored ? saved : null);
+    session.faqSnapshot = window.RMRoundtrip.extractFragmentFaqs(prepared.inner);
     if (restored) {
       state.dirty = true;
       state.notice = "Restored edits saved in this browser.";
@@ -1074,9 +1347,41 @@
     return bar;
   }
 
+  function bindCount(input, max, output) {
+    function paint() {
+      var count = input.value.trim().length;
+      output.textContent = count + "/" + max;
+      output.classList.toggle("over", count > max);
+    }
+    input.addEventListener("input", paint);
+    paint();
+    return paint;
+  }
+
+  function pathsMatch(a, b) {
+    return String(a || "").replace(/^\/+/, "") === String(b || "").replace(/^\/+/, "");
+  }
+
   function fieldsPanel() {
     var title = el("input", { id: "field-title", type: "text", autocomplete: "off" });
+    var slug = el("input", { id: "field-slug", type: "text", autocomplete: "off", spellcheck: "false" });
     var description = el("textarea", { id: "field-description", rows: "4" });
+    var titleCount = el("span", { class: "counter", id: "title-count" }, "0/60");
+    var descCount = el("span", { class: "counter", id: "desc-count" }, "0/155");
+    var author = el("input", { id: "field-author", type: "text", autocomplete: "name" });
+    var published = el("input", { id: "field-date", type: "text", autocomplete: "off" });
+    var category = el("input", { id: "field-category", type: "text", autocomplete: "off" });
+    var tags = el("input", { id: "field-tags", type: "text", autocomplete: "off" });
+    var categoryWrap = el("label", { class: "field", id: "category-wrap", hidden: "hidden" }, [
+      el("span", { class: "field-label" }, "Category"),
+      category
+    ]);
+    var tagsWrap = el("label", { class: "field", id: "tags-wrap", hidden: "hidden" }, [
+      el("span", { class: "field-label" }, "Tags"),
+      tags
+    ]);
+    var hero = el("img", { id: "hero-preview", class: "hero-preview", alt: "" });
+    var heroFile = el("input", { id: "hero-file", type: "file", accept: "image/*" });
     title.addEventListener("input", function () {
       if (!session || !session.editor) return;
       session.titleLock = true;
@@ -1091,16 +1396,89 @@
       state.dirty = true;
       scheduleAutosave();
     });
-    return el("section", { class: "fields", "aria-label": "Page details" }, [
-      el("h2", { class: "field-heading" }, "Page details"),
+    slug.addEventListener("input", function () {
+      state.dirty = true;
+      scheduleAutosave();
+    });
+    author.addEventListener("input", function () {
+      if (!session || !session.editor) return;
+      session.authorTouched = true;
+      var name = author.value.replace(/\s+/g, " ").trim();
+      if (session.postMeta && !session.postMeta.hasAuthor && name === "Ryan Moalemi") return;
+      session.metaLock = true;
+      try { window.RMWord.setAuthorName(session.editor, name); }
+      finally { session.metaLock = false; }
+      state.dirty = true;
+      scheduleAutosave();
+    });
+    published.addEventListener("input", function () {
+      if (!session || !session.editor) return;
+      if (session.postMeta && !session.postMeta.hasDate && !published.value.trim()) return;
+      session.metaLock = true;
+      try { window.RMWord.setPublishedDate(session.editor, published.value); }
+      finally { session.metaLock = false; }
+      state.dirty = true;
+      scheduleAutosave();
+    });
+    category.addEventListener("input", function () {
+      if (!session || !session.editor) return;
+      session.metaLock = true;
+      try { window.RMWord.setCategoryName(session.editor, category.value); }
+      finally { session.metaLock = false; }
+      state.dirty = true;
+      scheduleAutosave();
+    });
+    tags.addEventListener("input", function () {
+      if (!session || !session.editor || !session.postMeta || !session.postMeta.hasTags) return;
+      var names = tags.value.split(",").map(function (item) { return item.trim(); }).filter(Boolean);
+      session.metaLock = true;
+      try { window.RMWord.setTagNames(session.editor, names); }
+      finally { session.metaLock = false; }
+      state.dirty = true;
+      scheduleAutosave();
+    });
+    heroFile.addEventListener("change", function () {
+      var file = heroFile.files && heroFile.files[0];
+      heroFile.value = "";
+      if (file) uploadImageFile(file, { hero: true });
+    });
+    bindCount(title, 60, titleCount);
+    bindCount(description, 155, descCount);
+    return el("section", { class: "fields", "aria-label": "Post" }, [
+      el("h2", { class: "field-heading" }, "Post"),
       el("label", { class: "field" }, [
-        el("span", { class: "field-label" }, "Title"),
+        el("span", { class: "field-top" }, [
+          el("span", { class: "field-label" }, "Title"),
+          titleCount
+        ]),
         title
       ]),
       el("label", { class: "field" }, [
-        el("span", { class: "field-label" }, "Search description"),
+        el("span", { class: "field-label" }, "URL slug"),
+        slug
+      ]),
+      el("label", { class: "field" }, [
+        el("span", { class: "field-top" }, [
+          el("span", { class: "field-label" }, "Search description"),
+          descCount
+        ]),
         description
       ]),
+      el("div", { class: "field" }, [
+        el("span", { class: "field-label" }, "Featured image"),
+        hero,
+        el("label", { class: "btn ghost hero-upload" }, ["Upload", heroFile])
+      ]),
+      el("label", { class: "field" }, [
+        el("span", { class: "field-label" }, "Author"),
+        author
+      ]),
+      el("label", { class: "field" }, [
+        el("span", { class: "field-label" }, "Publish date"),
+        published
+      ]),
+      categoryWrap,
+      tagsWrap,
       el("div", { id: "alt-fields" }),
       el("div", { id: "comment-list" })
     ]);
@@ -1132,10 +1510,14 @@
     var fragment = currentFragment();
     var title = fieldText("field-title");
     var description = fieldText("field-description");
+    var slug = fieldText("field-slug");
+    var nextUrl = window.RMRoundtrip.nextUrlPath(state.draft.meta.url_path || "/", slug);
+    var slugChanged = nextUrl !== (state.draft.meta.url_path || "/");
+    var heroChanged = (session.heroPath || "") !== (session.remoteHero || "");
     var titleChanged = title !== (file.remoteTitle || "");
     var descChanged = description !== (file.remoteDescription || "");
     var textChanged = JSON.stringify(window.RMRoundtrip.fragmentSignature(fragment)) !== JSON.stringify(file.signature);
-    if (!titleChanged && !descChanged && !textChanged) {
+    if (!titleChanged && !descChanged && !textChanged && !slugChanged && !heroChanged) {
       state.dirty = false;
       if (!opts.quiet) {
         state.notice = "No changes to save.";
@@ -1144,10 +1526,14 @@
       if (!opts.holdLock) lock = false;
       return false;
     }
+    var faqs = window.RMRoundtrip.extractFragmentFaqs(fragment);
     var nextHtml = window.RMRoundtrip.applyDocument(file.originalHtml, fragment, {
       title: titleChanged ? title : null,
       description: descChanged ? description : null,
-      originalH1: file.baseline.h1 || file.remoteTitle || ""
+      originalH1: file.baseline.h1 || file.remoteTitle || "",
+      faqs: faqs,
+      originalFaqs: session.faqSnapshot || [],
+      heroSrc: heroChanged ? publicSrc(session.heroPath) : null
     });
     var check = window.RMRoundtrip.fidelityCheck(file.originalHtml, nextHtml, fragment);
     if (!check.ok) {
@@ -1162,14 +1548,35 @@
     }
     state.busy = "Saving…";
     paintStatus();
-    var files = [{ path: session.activePath, content: nextHtml }];
     var nextTitle = titleChanged ? title : (draft.meta.title || draft.title);
     var nextDesc = descChanged ? description : (draft.meta.meta_description || "");
-    if ((titleChanged || descChanged) && draft.jsonPath) {
-      files.push({
-        path: draft.jsonPath,
-        content: lib.withReviewMeta(draft.jsonText, nextTitle, nextDesc)
-      });
+    var newSlug = nextUrl.split("/").filter(Boolean).pop() || "";
+    var newFile = window.RMRoundtrip.nextFilePath(session.activePath, session.remoteSlug || "", newSlug);
+    var files = [];
+    if (textChanged || titleChanged || descChanged || heroChanged || newFile !== session.activePath) {
+      files.push({ path: newFile, content: nextHtml });
+      if (newFile !== session.activePath) files.push({ path: session.activePath, delete: true });
+    }
+    var jsonOut = "";
+    if ((titleChanged || descChanged || slugChanged || heroChanged) && draft.jsonPath) {
+      jsonOut = lib.withReviewMeta(draft.jsonText, nextTitle, nextDesc);
+      var reviewData = JSON.parse(jsonOut);
+      if (slugChanged) {
+        reviewData.url_path = nextUrl;
+        if (Array.isArray(reviewData.files)) {
+          reviewData.files = reviewData.files.map(function (item) {
+            return item === session.activePath ? newFile : item;
+          });
+        }
+      }
+      if (heroChanged) reviewData.hero_image = session.heroPath || "";
+      jsonOut = JSON.stringify(reviewData, null, 2) + "\n";
+      files.push({ path: draft.jsonPath, content: jsonOut });
+    }
+    if (!files.length) {
+      state.dirty = false;
+      if (!opts.holdLock) lock = false;
+      return false;
     }
     try {
       var sha = await commitFiles(draft.headRepo, draft.branch, files);
@@ -1179,10 +1586,20 @@
       file.remoteDescription = description;
       file.signature = window.RMRoundtrip.fragmentSignature(fragment);
       session.originalInner = fragment;
+      session.faqSnapshot = faqs;
+      session.remoteHero = session.heroPath || "";
+      session.remoteSlug = newSlug;
+      if (newFile !== session.activePath) {
+        session.files[newFile] = file;
+        delete session.files[session.activePath];
+        session.activePath = newFile;
+      }
       draft.sha = sha;
-      draft.jsonText = files.length > 1 ? files[1].content : draft.jsonText;
+      if (jsonOut) draft.jsonText = jsonOut;
       draft.meta.title = nextTitle;
       draft.meta.meta_description = nextDesc;
+      draft.meta.url_path = nextUrl;
+      if (heroChanged) draft.meta.hero_image = session.heroPath || "";
       draft.title = nextTitle;
       state.dirty = false;
       if (!opts.quiet) state.notice = "Saved.";
@@ -1211,9 +1628,13 @@
     var parent = await apiJson("/repos/" + repo + "/git/commits/" + parentSha);
     var tree = [];
     for (var i = 0; i < files.length; i++) {
+      if (files[i].delete) {
+        tree.push({ path: files[i].path, mode: "100644", type: "blob", sha: null });
+        continue;
+      }
       var blob = await apiJson("/repos/" + repo + "/git/blobs", {
         method: "POST",
-        body: { content: files[i].content, encoding: "utf-8" }
+        body: { content: files[i].content, encoding: files[i].encoding || "utf-8" }
       });
       tree.push({ path: files[i].path, mode: "100644", type: "blob", sha: blob.sha });
     }
@@ -1444,7 +1865,9 @@
     var save = document.getElementById("save-edits");
     var publish = document.getElementById("publish");
     var send = document.getElementById("send-back");
-    [save, publish, send].forEach(function (button) {
+    var previewBtn = document.getElementById("preview-live");
+    var revisionsBtn = document.getElementById("revisions");
+    [save, publish, send, previewBtn, revisionsBtn].forEach(function (button) {
       if (button) button.disabled = !!state.busy;
     });
   }
@@ -1741,8 +2164,10 @@
     back.addEventListener("click", goInbox);
     head.insertBefore(back, head.children[1]);
     var bar = el("div", { class: "action-bar" }, [
-      el("button", { class: "btn ghost", type: "button", id: "save-edits" }, "Save edits"),
-      el("button", { class: "btn ghost", type: "button", id: "send-back" }, "Send back"),
+      el("button", { class: "btn ghost", type: "button", id: "save-edits" }, "Save draft"),
+      el("button", { class: "btn ghost", type: "button", id: "preview-live", "aria-pressed": "false" }, "Preview"),
+      el("button", { class: "btn ghost", type: "button", id: "revisions" }, "Revisions"),
+      el("button", { class: "btn ghost", type: "button", id: "send-back" }, "Send back with notes"),
       el("button", { class: "btn primary", type: "button", id: "publish" }, "Approve & publish")
     ]);
     var frame = el("iframe", {
@@ -1764,6 +2189,10 @@
         paintStatus();
       });
     });
+    bar.querySelector("#preview-live").addEventListener("click", function () {
+      setPreviewMode(!document.body.classList.contains("live-preview"));
+    });
+    bar.querySelector("#revisions").addEventListener("click", function () { openRevisions(); });
     bar.querySelector("#send-back").addEventListener("click", function () { sendBack(); });
     bar.querySelector("#publish").addEventListener("click", function () { publish(); });
     try {
@@ -1787,7 +2216,13 @@
         srcMap: {},
         showEdits: false,
         prepared: null,
-        autosaveTimer: 0
+        autosaveTimer: 0,
+        remoteSlug: String(draft.meta.url_path || "/").split("/").filter(Boolean).pop() || "",
+        remoteHero: draft.meta.hero_image || "",
+        heroPath: draft.meta.hero_image || "",
+        faqSnapshot: [],
+        postMeta: null,
+        authorTouched: false
       };
       var html = await textAt(draft.headRepo, active, draft.sha);
       session.files[active] = { originalHtml: html, baseline: baselineFrom(html) };
@@ -1823,6 +2258,11 @@
             el("span", { id: "save-state", role: "status" }, "Saved"),
             showEdits
           ]),
+          el("div", { class: "preview-tools", id: "preview-tools", hidden: "hidden" }, [
+            el("button", { type: "button", class: "tool", id: "preview-desktop", "aria-pressed": "true" }, "Desktop"),
+            el("button", { type: "button", class: "tool", id: "preview-phone", "aria-pressed": "false" }, "Phone"),
+            el("button", { type: "button", class: "tool", id: "preview-close" }, "Close preview")
+          ]),
           frame,
           advanced
         ]))
@@ -1830,6 +2270,12 @@
       var note = screen.querySelector(".muted");
       if (note) note.remove();
       screen.append(grid);
+      var desktopBtn = document.getElementById("preview-desktop");
+      var phoneBtn = document.getElementById("preview-phone");
+      var closePreview = document.getElementById("preview-close");
+      if (desktopBtn) desktopBtn.addEventListener("click", function () { setPhonePreview(false); });
+      if (phoneBtn) phoneBtn.addEventListener("click", function () { setPhonePreview(true); });
+      if (closePreview) closePreview.addEventListener("click", function () { setPreviewMode(false); setPhonePreview(false); });
       if (session.warnings.length) {
         screen.append(el("ul", { class: "warnings" }, session.warnings.map(function (item) {
           return el("li", {}, item);
