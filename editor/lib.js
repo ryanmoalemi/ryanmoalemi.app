@@ -458,7 +458,339 @@
     return serializeDocument(doc);
   }
 
-  function heroPresent(doc, hero) {
+  function escapeHtmlText(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeHtmlAttr(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;");
+}
+
+function decodeEntities(text) {
+  return String(text == null ? "" : text)
+    .replace(/&#(\d+);/g, function (_, n) { return codePoint(Number(n)); })
+    .replace(/&#x([0-9a-f]+);/gi, function (_, n) { return codePoint(parseInt(n, 16)); })
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function codePoint(n) {
+  if (!Number.isFinite(n) || n < 0 || n > 0x10ffff) return "";
+  try { return String.fromCodePoint(n); }
+  catch (err) { return ""; }
+}
+
+function readTagNameAt(html, lt) {
+  var match = String(html).slice(lt + 1).match(/^([A-Za-z][A-Za-z0-9:-]*)/);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function readCloseName(html, lt) {
+  var match = String(html).slice(lt + 2).match(/^([A-Za-z][A-Za-z0-9:-]*)/);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function findTagEnd(html, start) {
+  var quote = "";
+  for (var i = start; i < html.length; i++) {
+    var ch = html.charAt(i);
+    if (quote) {
+      if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ">") return i;
+  }
+  return -1;
+}
+
+function skipRawText(html, openEnd, name) {
+  var rest = html.slice(openEnd + 1);
+  var match = rest.match(new RegExp("</" + name + "\\s*>", "i"));
+  if (!match) return html.length;
+  return openEnd + 1 + match.index + match[0].length;
+}
+
+function findMatchingClose(html, from, tag) {
+  var depth = 1;
+  var i = from;
+  while (i < html.length) {
+    var lt = html.indexOf("<", i);
+    if (lt === -1) return -1;
+    if (html.startsWith("<!--", lt)) {
+      var commentEnd = html.indexOf("-->", lt + 4);
+      i = commentEnd === -1 ? html.length : commentEnd + 3;
+      continue;
+    }
+    if (html.charAt(lt + 1) === "/") {
+      var closeName = readCloseName(html, lt);
+      var closeEnd = findTagEnd(html, lt);
+      if (closeName === tag) {
+        depth -= 1;
+        if (depth === 0) return lt;
+      }
+      i = closeEnd === -1 ? html.length : closeEnd + 1;
+      continue;
+    }
+    var name = readTagNameAt(html, lt);
+    var openEnd = findTagEnd(html, lt);
+    if (openEnd === -1) return -1;
+    var selfClose = /\/\s*$/.test(html.slice(lt + 1, openEnd));
+    if (!selfClose && (name === "script" || name === "style" || name === "textarea")) {
+      i = skipRawText(html, openEnd, name);
+      continue;
+    }
+    if (name === tag && !selfClose) depth += 1;
+    i = openEnd + 1;
+  }
+  return -1;
+}
+
+function replaceNthElementInner(html, tagName, index, newInner) {
+  var source = String(html || "");
+  var tag = String(tagName || "").toLowerCase();
+  var found = 0;
+  var i = 0;
+  while (i < source.length) {
+    var lt = source.indexOf("<", i);
+    if (lt === -1) break;
+    if (source.startsWith("<!--", lt)) {
+      var commentEnd = source.indexOf("-->", lt + 4);
+      i = commentEnd === -1 ? source.length : commentEnd + 3;
+      continue;
+    }
+    if (source.charAt(lt + 1) === "!" || source.charAt(lt + 1) === "?") {
+      var declEnd = source.indexOf(">", lt + 2);
+      i = declEnd === -1 ? source.length : declEnd + 1;
+      continue;
+    }
+    if (source.charAt(lt + 1) === "/") {
+      i = lt + 1;
+      continue;
+    }
+    var name = readTagNameAt(source, lt);
+    if (!name) {
+      i = lt + 1;
+      continue;
+    }
+    var openEnd = findTagEnd(source, lt);
+    if (openEnd === -1) break;
+    var selfClose = /\/\s*$/.test(source.slice(lt + 1, openEnd));
+    if (!selfClose && (name === "script" || name === "style" || name === "textarea") && !(name === tag && found === index)) {
+      i = skipRawText(source, openEnd, name);
+      continue;
+    }
+    if (name !== tag || selfClose) {
+      i = openEnd + 1;
+      continue;
+    }
+    var closeStart = findMatchingClose(source, openEnd + 1, tag);
+    if (closeStart === -1) break;
+    if (found === index) {
+      return source.slice(0, openEnd + 1) + String(newInner == null ? "" : newInner) + source.slice(closeStart);
+    }
+    found += 1;
+    i = closeStart;
+  }
+  throw new Error("Could not find <" + tag + "> " + index);
+}
+
+function rewriteTitleText(current, originalH1, title) {
+  var next = String(title == null ? "" : title);
+  var old = String(originalH1 || "");
+  if (old && String(current).indexOf(old) !== -1) {
+    if (old === next) return current;
+    return String(current).split(old).join(next);
+  }
+  return next;
+}
+
+function replaceOnce(html, pattern, replacer) {
+  var done = false;
+  return String(html || "").replace(pattern, function () {
+    if (done) return arguments[0];
+    done = true;
+    return replacer.apply(null, arguments);
+  });
+}
+
+function updateTitleInHtml(html, title, originalH1) {
+  var next = replaceOnce(html, /<title\b[^>]*>[\s\S]*?<\/title>/i, function (full) {
+    var match = full.match(/^<title(\s[^>]*)?>([\s\S]*)<\/title>$/i);
+    if (!match) return full;
+    var decoded = decodeEntities(match[2]);
+    var rewritten = rewriteTitleText(decoded, originalH1, title);
+    if (rewritten === decoded) return full;
+    return "<title" + (match[1] || "") + ">" + escapeHtmlText(rewritten) + "</title>";
+  });
+  next = replaceMetaByKey(next, "property", "og:title", function (current) {
+    return rewriteTitleText(current, originalH1, title);
+  });
+  next = replaceMetaByKey(next, "name", "twitter:title", function (current) {
+    return rewriteTitleText(current, originalH1, title);
+  });
+  return next;
+}
+
+function updateDescriptionInHtml(html, description) {
+  var next = replaceMetaByKey(html, "name", "description", function () { return description; });
+  next = replaceMetaByKey(next, "property", "og:description", function () { return description; });
+  next = replaceMetaByKey(next, "name", "twitter:description", function () { return description; });
+  return next;
+}
+
+function readMetaAttr(tag, name) {
+  var match = String(tag).match(new RegExp("\\s" + name + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'=<>`]+))", "i"));
+  if (!match) return null;
+  if (match[1] != null) return match[1];
+  if (match[2] != null) return match[2];
+  return match[3];
+}
+
+function setMetaAttr(tag, name, value) {
+  var pattern = new RegExp("(\\s" + name + "\\s*=\\s*)(\"[^\"]*\"|'[^']*'|[^\\s\"'=<>`]+)", "i");
+  return String(tag).replace(pattern, function (_, prefix, quoted) {
+    var quote = quoted.charAt(0) === "'" ? "'" : "\"";
+    var safe = escapeHtmlAttr(value);
+    if (quote === "'") safe = safe.replace(/'/g, "&#39;");
+    return prefix + quote + safe + quote;
+  });
+}
+
+function replaceMetaByKey(html, attr, expected, nextValue) {
+  return String(html || "").replace(/<meta\b[^>]*>/gi, function (tag) {
+    var found = readMetaAttr(tag, attr);
+    if (found == null || decodeEntities(found).toLowerCase() !== String(expected).toLowerCase()) return tag;
+    var current = readMetaAttr(tag, "content");
+    if (current == null) return tag;
+    var value = nextValue(decodeEntities(current));
+    if (value == null || decodeEntities(current) === String(value)) return tag;
+    return setMetaAttr(tag, "content", value);
+  });
+}
+
+function applyArticle(html, tagName, index, newInner, updates) {
+  var next = replaceNthElementInner(html, tagName, index, newInner);
+  if (updates && updates.title != null) next = updateTitleInHtml(next, updates.title, updates.originalH1 || "");
+  if (updates && updates.description != null) next = updateDescriptionInHtml(next, updates.description);
+  return next;
+}
+
+function diffWords(before, after) {
+  var a = tokenizeWords(before);
+  var b = tokenizeWords(after);
+  return mergeDiffOps(diffTokenList(a, b));
+}
+
+function tokenizeWords(text) {
+  return String(text == null ? "" : text).split(/(\s+)/).filter(function (part) { return part.length; });
+}
+
+function mergeDiffOps(ops) {
+  var out = [];
+  (ops || []).forEach(function (op) {
+    var last = out[out.length - 1];
+    if (last && last.op === op.op) last.text += op.text;
+    else out.push({ op: op.op, text: op.text });
+  });
+  return out;
+}
+
+function diffTokenList(a, b) {
+  var n = a.length;
+  var m = b.length;
+  if (!n && !m) return [];
+  if (!n) return [{ op: "insert", text: b.join("") }];
+  if (!m) return [{ op: "delete", text: a.join("") }];
+  var max = n + m;
+  var v = { 1: 0 };
+  var trace = [];
+  var found = false;
+  for (var d = 0; d <= max && !found; d++) {
+    trace.push(Object.assign({}, v));
+    for (var k = -d; k <= d; k += 2) {
+      var x;
+      if (k === -d || (k !== d && (v[k - 1] || 0) < (v[k + 1] || 0))) x = v[k + 1] || 0;
+      else x = (v[k - 1] || 0) + 1;
+      var y = x - k;
+      while (x < n && y < m && a[x] === b[y]) {
+        x += 1;
+        y += 1;
+      }
+      v[k] = x;
+      if (x >= n && y >= m) {
+        found = true;
+        break;
+      }
+    }
+  }
+  if (!found) return [{ op: "delete", text: a.join("") }, { op: "insert", text: b.join("") }];
+  var x = n;
+  var y = m;
+  var ops = [];
+  for (var depth = trace.length - 1; depth >= 0; depth--) {
+    var snapshot = trace[depth];
+    var diag = x - y;
+    var prevK;
+    if (diag === -depth || (diag !== depth && (snapshot[diag - 1] || 0) < (snapshot[diag + 1] || 0))) prevK = diag + 1;
+    else prevK = diag - 1;
+    var prevX = snapshot[prevK] || 0;
+    var prevY = prevX - prevK;
+    while (x > prevX && y > prevY) {
+      ops.push({ op: "equal", text: a[x - 1] });
+      x -= 1;
+      y -= 1;
+    }
+    if (depth === 0) break;
+    if (x === prevX) {
+      ops.push({ op: "insert", text: b[prevY] });
+      y = prevY;
+    } else {
+      ops.push({ op: "delete", text: a[prevX] });
+      x = prevX;
+    }
+  }
+  ops.reverse();
+  return ops;
+}
+
+function formatSendBackNote(note, comments) {
+  var lines = [];
+  var main = String(note || "").trim();
+  if (main) lines.push(main);
+  var notes = (comments || []).filter(function (item) {
+    return item && String(item.note || "").trim();
+  });
+  if (notes.length) {
+    if (lines.length) lines.push("");
+    lines.push("Notes on the draft:");
+    notes.forEach(function (item) {
+      var quote = String(item.quote || "").replace(/\s+/g, " ").trim();
+      var text = String(item.note || "").trim();
+      if (quote) lines.push("- \"" + quote + "\": " + text);
+      else lines.push("- " + text);
+    });
+  }
+  return lines.join("\n").trim();
+}
+
+function autosaveKey(repo, pr, path) {
+  return "rm-editor-draft:" + String(repo || "") + ":" + String(pr || "") + ":" + String(path || "");
+}
+
+function heroPresent(doc, hero) {
     if (!hero) return true;
     var target = String(hero).trim();
     var baseName = target.split("/").pop().split("?")[0];
@@ -516,7 +848,17 @@
     sanitizeEditableHtml: sanitizeEditableHtml,
     serializeDocument: serializeDocument,
     applyEdits: applyEdits,
-    heroPresent: heroPresent
+    heroPresent: heroPresent,
+    escapeHtmlText: escapeHtmlText,
+    escapeHtmlAttr: escapeHtmlAttr,
+    decodeEntities: decodeEntities,
+    replaceNthElementInner: replaceNthElementInner,
+    updateTitleInHtml: updateTitleInHtml,
+    updateDescriptionInHtml: updateDescriptionInHtml,
+    applyArticle: applyArticle,
+    diffWords: diffWords,
+    formatSendBackNote: formatSendBackNote,
+    autosaveKey: autosaveKey
   };
 
   root.RMLib = api;

@@ -147,8 +147,10 @@ assert.strictEqual(updated.endsWith("\n"), true);
 
 var editorSrc = fs.readFileSync(path.join(__dirname, "editor.js"), "utf8");
 var libSrc = fs.readFileSync(path.join(__dirname, "lib.js"), "utf8");
+var roundSrc = fs.readFileSync(path.join(__dirname, "roundtrip.js"), "utf8");
+var wordSrc = fs.readFileSync(path.join(__dirname, "src", "word.js"), "utf8");
 var htmlSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
-[editorSrc, libSrc, htmlSrc].forEach(function (src) {
+[editorSrc, libSrc, roundSrc, wordSrc, htmlSrc].forEach(function (src) {
   assert.strictEqual(src.indexOf("raw.githubusercontent.com"), -1);
   assert.strictEqual(/github_pat_[A-Za-z0-9]{20,}/.test(src), false);
   assert.strictEqual(/ghp_[A-Za-z0-9]{20,}/.test(src), false);
@@ -177,8 +179,55 @@ assert.strictEqual((editorSrc.match(/fetch\s*\(/g) || []).length, 1);
 
 var robots = fs.readFileSync(path.join(__dirname, "..", "robots.txt"), "utf8");
 assert.ok(robots.indexOf("Disallow: /editor/") > -1);
+assert.ok(robots.indexOf("Disallow: /AGENTS.md") > -1);
+assert.ok(robots.indexOf("Disallow: /README.md") > -1);
 var sitemap = fs.readFileSync(path.join(__dirname, "..", "sitemap.xml"), "utf8");
 assert.strictEqual(sitemap.indexOf("editor"), -1);
+assert.ok(sitemap.indexOf("https://ryanmoalemi.app/privacy/") > -1);
+assert.strictEqual(sitemap.indexOf("privacy.html"), -1);
+var pagesConfig = fs.readFileSync(path.join(__dirname, "..", "_config.yml"), "utf8");
+assert.ok(pagesConfig.indexOf('"*.md"') > -1);
+
+assert.deepStrictEqual(lib.diffWords("alpha beta", "alpha beta"), [{ op: "equal", text: "alpha beta" }]);
+assert.deepStrictEqual(lib.diffWords("alpha beta", "alpha gamma beta"), [
+  { op: "equal", text: "alpha " },
+  { op: "insert", text: "gamma " },
+  { op: "equal", text: "beta" }
+]);
+assert.deepStrictEqual(lib.diffWords("alpha beta", "alpha"), [
+  { op: "equal", text: "alpha" },
+  { op: "delete", text: " beta" }
+]);
+assert.strictEqual(lib.formatSendBackNote("Fix the lede.", [
+  { quote: "Hello world", note: "Say who this is." },
+  { quote: "", note: "Check the date." }
+]), "Fix the lede.\n\nNotes on the draft:\n- \"Hello world\": Say who this is.\n- Check the date.");
+assert.strictEqual(lib.formatSendBackNote("", [{ quote: "Sale", note: "Add the date." }]), "Notes on the draft:\n- \"Sale\": Add the date.");
+assert.strictEqual(lib.autosaveKey("ryanmoalemi/fullcourtbuckets", 78, "news/a/index.html"), "rm-editor-draft:ryanmoalemi/fullcourtbuckets:78:news/a/index.html");
+
+var sampleDoc = "<!DOCTYPE html><html><head><title>Old title | Site</title><meta name=\"description\" content=\"Old desc\"><meta property=\"og:title\" content=\"Old title | Site\"><meta property=\"og:description\" content=\"Old desc\"><meta name=\"twitter:title\" content=\"Old title\"><script type=\"application/ld+json\">{\"headline\":\"Old title\"}</script></head><body><header><nav>Keep me</nav></header><main><article class=\"story\"><p>Inside</p></article></main><footer>Footer stays</footer></body></html>";
+var spliced = lib.replaceNthElementInner(sampleDoc, "article", 0, "<p>Changed</p>");
+assert.ok(spliced.indexOf("<header><nav>Keep me</nav></header>") > -1);
+assert.ok(spliced.indexOf("<footer>Footer stays</footer>") > -1);
+assert.ok(spliced.indexOf("{\"headline\":\"Old title\"}") > -1);
+assert.ok(spliced.indexOf("<article class=\"story\"><p>Changed</p></article>") > -1);
+assert.strictEqual(spliced.slice(0, spliced.indexOf("<article")), sampleDoc.slice(0, sampleDoc.indexOf("<article")));
+assert.ok(spliced.endsWith(sampleDoc.slice(sampleDoc.indexOf("</article>"))));
+var titled = lib.updateTitleInHtml(sampleDoc, "New title", "Old title");
+assert.ok(titled.indexOf("<title>New title | Site</title>") > -1);
+assert.ok(titled.indexOf("content=\"New title | Site\"") > -1);
+assert.ok(titled.indexOf("content=\"New title\"") > -1);
+assert.ok(titled.indexOf("{\"headline\":\"Old title\"}") > -1);
+assert.strictEqual(lib.updateTitleInHtml(sampleDoc, "Old title", "Old title"), sampleDoc);
+var described = lib.updateDescriptionInHtml(sampleDoc, "New desc");
+assert.ok(described.indexOf("name=\"description\" content=\"New desc\"") > -1);
+assert.ok(described.indexOf("property=\"og:description\" content=\"New desc\"") > -1);
+assert.ok(described.indexOf("<title>Old title | Site</title>") > -1);
+var applied = lib.applyArticle(sampleDoc, "article", 0, "<p>Edited</p>", { title: "New title", originalH1: "Old title", description: "New desc" });
+assert.ok(applied.indexOf("<p>Edited</p>") > -1);
+assert.ok(applied.indexOf("<title>New title | Site</title>") > -1);
+assert.ok(applied.indexOf("content=\"New desc\"") > -1);
+assert.ok(applied.indexOf("<footer>Footer stays</footer>") > -1);
 
 console.log("node tests passed");
 
@@ -302,3 +351,4 @@ fs.writeFileSync(rejectFile, flowPage(
 var rejectResult = chromeDump(rejectFile);
 if (rejectResult !== "PASS") throw new Error("rejected token was stored: " + (rejectResult || "no result"));
 console.log("reject test passed");
+
