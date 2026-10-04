@@ -10,7 +10,7 @@ var roundtripSrc = fs.readFileSync(path.join(__dirname, "roundtrip.js"), "utf8")
   var src = fs.readFileSync(path.join(__dirname, file), "utf8");
   assert.strictEqual(src.indexOf("\u2014"), -1, file + " has an em dash");
 });
-assert.strictEqual((editorSrc.match(/fetch\s*\(/g) || []).length, 1);
+assert.strictEqual((editorSrc.match(/fetch\s*\(/g) || []).length, 2);
 assert.ok(editorSrc.indexOf("Show my edits") > -1);
 assert.ok(editorSrc.indexOf("Search description") > -1);
 assert.ok(editorSrc.indexOf("fidelityCheck") > -1);

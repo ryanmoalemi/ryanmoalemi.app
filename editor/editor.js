@@ -27,7 +27,8 @@
   var publishGeneration = 0;
 
   var PREVIEW_CSS = [
-    "#rm-mount, .ProseMirror { min-height: 8rem; }",
+    "html, body { min-height: 0 !important; height: auto !important; }",
+    "main, article, .shell, .page, #rm-mount, .ProseMirror { min-height: 0 !important; }",
     ".ProseMirror { outline: none; white-space: pre-wrap; }",
     ".ProseMirror:focus { outline: none; }",
     ".rm-ins { background: rgba(70, 180, 90, 0.28); border-radius: 2px; }",
@@ -226,6 +227,7 @@
     var perms = permissions && permissions.length ? permissions : (err ? lib.permissionsFromFailure(err.url, err.status, err.message, err.accepted) : []);
     var labelLeft = item && item.steps && item.steps.comment === "done" && item.steps.label === "pending";
     var readyLeft = item && item.action === "publish" && item.steps && item.steps.ready === "pending";
+    var syncLeft = item && item.action === "publish" && item.steps && item.steps.sync === "pending";
     var publishLeft = item && item.action === "publish" && item.steps && item.steps.merge !== "done";
     var text;
     if (err && err.deployWait) {
@@ -242,6 +244,11 @@
       text = access
         ? "The note is on the pull request. The changes-requested label was not added. The token is missing " + perm + " on " + lib.repoLabel(item.repo) + ". Open token settings, set Pull requests to Read and write, then press Retry."
         : "The note is on the pull request. The changes-requested label was not added. " + (lib.plainText(err && err.message) || "Press Retry.");
+    } else if (syncLeft) {
+      var syncDetail = lib.plainText(err && err.message) || "The branch could not be updated with main.";
+      text = access
+        ? "Publishing did not finish. The branch was not updated with main, and the live page was not changed. The token is missing " + (perms.length ? perms.join(", ") : lib.PERMISSION_CONTENTS) + " on " + lib.repoLabel(item.repo) + ". Open token settings, then press Retry."
+        : "Publishing did not finish. " + syncDetail + " Your edits are still here, and the live page was not changed. Press Retry.";
     } else if (readyLeft) {
       var readyPerm = (perms.length ? perms : [lib.PERMISSION_PULLS]).join(", ");
       text = access
@@ -1121,14 +1128,38 @@
     };
   }
 
+  function previewContentHeight(doc) {
+    var body = doc && doc.body;
+    if (!body) return 0;
+    var view = doc.defaultView;
+    var scrollY = view ? view.scrollY || 0 : 0;
+    var bottom = 0;
+    var nodes = body.querySelectorAll("*");
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var style = view && view.getComputedStyle ? view.getComputedStyle(node) : null;
+      if (style && (style.display === "none" || style.visibility === "hidden" || style.position === "fixed")) continue;
+      var rect = node.getBoundingClientRect();
+      if (!rect || (rect.height < 1 && rect.width < 1)) continue;
+      var edge = rect.bottom + scrollY;
+      if (edge > bottom) bottom = edge;
+    }
+    if (!bottom) bottom = body.scrollHeight || 0;
+    return Math.ceil(bottom);
+  }
+
   function fitIframe(iframe) {
     var doc = iframe.contentDocument;
-    if (!doc) return;
-    var height = Math.max(
-      doc.documentElement ? doc.documentElement.scrollHeight : 0,
-      doc.body ? doc.body.scrollHeight : 0
-    );
-    iframe.style.height = Math.max(520, height + 24) + "px";
+    if (!doc || !doc.body) return;
+    if (doc.documentElement) {
+      doc.documentElement.style.minHeight = "0";
+      doc.documentElement.style.height = "auto";
+    }
+    doc.body.style.minHeight = "0";
+    doc.body.style.height = "auto";
+    iframe.style.height = "0px";
+    var height = previewContentHeight(doc);
+    iframe.style.height = Math.max(0, height) + "px";
   }
 
   function refreshTools() {
@@ -2271,6 +2302,208 @@
     return readPendingItem(item) || item;
   }
 
+  function publishSyncError(message) {
+    var err = new Error(message);
+    err.publishSync = true;
+    return err;
+  }
+
+  function refHeadsPath(branch) {
+    return String(branch || "").split("/").filter(Boolean).map(function (part) {
+      return encodeURIComponent(part);
+    }).join("/");
+  }
+
+  async function readBlobText(repo, sha, cache) {
+    if (!sha) return "";
+    if (cache[sha] != null) return cache[sha];
+    var blob = await apiJson("/repos/" + repo + "/git/blobs/" + sha);
+    var text = lib.decodeGitBlob(blob);
+    cache[sha] = text;
+    return text;
+  }
+
+  async function syncBranchWithMain(item, generation) {
+    if (!item.branch) throw publishSyncError("The pull request has no branch, so the live page was not changed.");
+    if (item.branch === "master" || item.branch === "main") {
+      throw publishSyncError("Refusing to publish that branch. The live page was not changed.");
+    }
+    showPublishProgress("Updating the pull request with main.");
+    var pr = await apiJson("/repos/" + item.repo + "/pulls/" + item.number);
+    if (generation !== publishGeneration) return { cancelled: true };
+    var baseRef = pr && pr.base && pr.base.ref;
+    if (baseRef !== "main") throw publishSyncError("This pull request does not target main, so the live page was not changed.");
+    if (pr.merged) return { alreadyMerged: true, mainSha: "", treeSha: "" };
+    if (String(pr.state || "").toLowerCase() === "closed") {
+      throw publishSyncError("The pull request is closed, so the live page was not changed.");
+    }
+    var headName = (pr.head && pr.head.ref) || item.branch;
+    if (headName && item.branch && headName !== item.branch) {
+      throw publishSyncError("The branch does not match the pull request, so the live page was not changed.");
+    }
+    var mainRef = await apiJson("/repos/" + item.repo + "/git/ref/heads/main");
+    var headRef = await apiJson("/repos/" + item.repo + "/git/ref/heads/" + refHeadsPath(item.branch));
+    var mainSha = mainRef && mainRef.object && mainRef.object.sha;
+    var headSha = headRef && headRef.object && headRef.object.sha;
+    if (!mainSha || !headSha) throw publishSyncError("The branch could not be read, so the live page was not changed.");
+    var compare = await apiJson("/repos/" + item.repo + "/compare/" + mainSha + "..." + headSha);
+    if (generation !== publishGeneration) return { cancelled: true };
+    var baseSha = compare && compare.merge_base_commit && compare.merge_base_commit.sha;
+    if (!baseSha) throw publishSyncError("The draft does not share history with main, so the live page was not changed.");
+    var mainCommit = await apiJson("/repos/" + item.repo + "/git/commits/" + mainSha);
+    var headCommit = await apiJson("/repos/" + item.repo + "/git/commits/" + headSha);
+    var mainTreeSha = mainCommit && mainCommit.tree && mainCommit.tree.sha;
+    var headTreeSha = headCommit && headCommit.tree && headCommit.tree.sha;
+    if (!mainTreeSha || !headTreeSha) throw publishSyncError("The branch could not be read, so the live page was not changed.");
+    var mainTree = await apiJson("/repos/" + item.repo + "/git/trees/" + mainTreeSha + "?recursive=1");
+    var headTree = await apiJson("/repos/" + item.repo + "/git/trees/" + headTreeSha + "?recursive=1");
+    if ((mainTree && mainTree.truncated) || (headTree && headTree.truncated)) {
+      throw publishSyncError("The repository listing was too large to update safely, so the live page was not changed.");
+    }
+    var baseTree = mainTree;
+    if (baseSha !== mainSha) {
+      if (baseSha === headSha) baseTree = headTree;
+      else {
+        var baseCommit = await apiJson("/repos/" + item.repo + "/git/commits/" + baseSha);
+        var baseTreeSha = baseCommit && baseCommit.tree && baseCommit.tree.sha;
+        baseTree = baseTreeSha ? await apiJson("/repos/" + item.repo + "/git/trees/" + baseTreeSha + "?recursive=1") : { tree: [] };
+        if (baseTree && baseTree.truncated) {
+          throw publishSyncError("The repository listing was too large to update safely, so the live page was not changed.");
+        }
+      }
+    }
+    if (generation !== publishGeneration) return { cancelled: true };
+    var plan = lib.integrationPlan(baseTree.tree, mainTree.tree, headTree.tree);
+    var drifted = lib.protectedDrift(plan.protectedShas, mainTree.tree, plan.overlay);
+    if (drifted) throw publishSyncError("The article on the branch could not be kept, so the live page was not changed.");
+    showPublishProgress("Keeping the article and rebuilding the news hub, homepage, ticker, and sitemaps.");
+    var cache = {};
+    var mainIndex = lib.indexTree(mainTree.tree);
+    var headIndex = lib.indexTree(headTree.tree);
+    async function textFrom(index, path) {
+      if (!index[path] || !index[path].sha) return null;
+      return readBlobText(item.repo, index[path].sha, cache);
+    }
+    var mainArticles = [];
+    var headArticles = [];
+    try {
+      if (mainIndex["articles.json"]) mainArticles = JSON.parse(await textFrom(mainIndex, "articles.json"));
+      if (headIndex["articles.json"]) headArticles = JSON.parse(await textFrom(headIndex, "articles.json"));
+    } catch (err) {
+      throw publishSyncError("The article list could not be read, so the live page was not changed.");
+    }
+    if (!Array.isArray(mainArticles) || !Array.isArray(headArticles)) {
+      throw publishSyncError("The article list could not be read, so the live page was not changed.");
+    }
+    var articles = lib.prepareArticles(mainArticles, headArticles);
+    var texts = {};
+    var sharedNames = [
+      "index.html",
+      "news/index.html",
+      "authors/ryan-moalemi/index.html",
+      "pages-sitemap.xml",
+      "sitemap.xml",
+      "sitemap/index.html"
+    ];
+    for (var s = 0; s < sharedNames.length; s++) {
+      var sharedText = await textFrom(mainIndex, sharedNames[s]);
+      if (sharedText != null) texts[sharedNames[s]] = sharedText;
+    }
+    var teamPaths = Object.keys(mainIndex).filter(function (filePath) {
+      return /^wnba\/teams\/[^/]+\/index\.html$/.test(filePath);
+    });
+    for (var t = 0; t < teamPaths.length; t++) {
+      texts[teamPaths[t]] = await textFrom(mainIndex, teamPaths[t]);
+    }
+    var newest = articles[0];
+    var ticker = "";
+    if (newest && newest.slug) {
+      var postPath = "news/" + newest.slug + "/index.html";
+      var postText = await textFrom(headIndex, postPath);
+      if (postText == null) postText = await textFrom(mainIndex, postPath);
+      ticker = lib.articleTickerInner(postText || "");
+    }
+    var rebuilt = lib.rebuildSharedTexts(texts, articles, ticker, !!mainIndex["wnba/couples/index.html"]);
+    if (rebuilt.conflict) {
+      throw publishSyncError(rebuilt.conflict + " still has a merge conflict, so the live page was not changed.");
+    }
+    var overlay = plan.overlay.slice();
+    var articleText = JSON.stringify(articles, null, 2) + "\n";
+    var mainArticleText = mainIndex["articles.json"] ? await textFrom(mainIndex, "articles.json") : "";
+    if (articleText !== mainArticleText) {
+      var articleBlob = await apiJson("/repos/" + item.repo + "/git/blobs", {
+        method: "POST",
+        body: { content: articleText, encoding: "utf-8" }
+      });
+      overlay.push({ path: "articles.json", mode: "100644", type: "blob", sha: articleBlob.sha });
+    }
+    var rebuiltPaths = Object.keys(rebuilt.files);
+    for (var r = 0; r < rebuiltPaths.length; r++) {
+      var rebuiltPath = rebuiltPaths[r];
+      if (rebuilt.files[rebuiltPath] === texts[rebuiltPath]) continue;
+      var rebuiltBlob = await apiJson("/repos/" + item.repo + "/git/blobs", {
+        method: "POST",
+        body: { content: rebuilt.files[rebuiltPath], encoding: "utf-8" }
+      });
+      overlay.push({ path: rebuiltPath, mode: "100644", type: "blob", sha: rebuiltBlob.sha });
+    }
+    if (generation !== publishGeneration) return { cancelled: true };
+    var behind = Number(compare.behind_by) > 0;
+    if (!overlay.length && !behind) {
+      return { alreadyMerged: false, mainSha: mainSha, treeSha: headTreeSha, commitSha: headSha };
+    }
+    var treeData = await apiJson("/repos/" + item.repo + "/git/trees", {
+      method: "POST",
+      body: { base_tree: mainTreeSha, tree: overlay }
+    });
+    var parents = behind ? [headSha, mainSha] : [headSha];
+    var commit = await apiJson("/repos/" + item.repo + "/git/commits", {
+      method: "POST",
+      body: {
+        message: "Rebuild shared listings for the approved article",
+        tree: treeData.sha,
+        parents: parents
+      }
+    });
+    if (generation !== publishGeneration) return { cancelled: true };
+    await apiJson("/repos/" + item.repo + "/git/refs/heads/" + refHeadsPath(item.branch), {
+      method: "PATCH",
+      body: { sha: commit.sha }
+    });
+    return { alreadyMerged: false, mainSha: mainSha, treeSha: treeData.sha, commitSha: commit.sha };
+  }
+
+  async function pushSquashToMain(item, integrated) {
+    if (!integrated || !integrated.treeSha || !integrated.mainSha) {
+      throw publishSyncError("The rebuilt branch was not ready to publish, so the live page was not changed.");
+    }
+    showPublishProgress("Publishing the rebuilt branch to main.");
+    var ref = await apiJson("/repos/" + item.repo + "/git/ref/heads/main");
+    var current = ref && ref.object && ref.object.sha;
+    if (current !== integrated.mainSha) {
+      throw publishSyncError("main changed while publishing, so the live page was not changed.");
+    }
+    var squash = await apiJson("/repos/" + item.repo + "/git/commits", {
+      method: "POST",
+      body: {
+        message: item.title || "Publish approved article",
+        tree: integrated.treeSha,
+        parents: [current]
+      }
+    });
+    await apiJson("/repos/" + item.repo + "/git/refs/heads/main", {
+      method: "PATCH",
+      body: { sha: squash.sha }
+    });
+    try {
+      await apiJson("/repos/" + item.repo + "/pulls/" + item.number, {
+        method: "PATCH",
+        body: { state: "closed" }
+      });
+    } catch (err) { /* main already has the article */ }
+    return squash.sha;
+  }
+
   async function mergePullRequest(item) {
     var path = "/repos/" + item.repo + "/pulls/" + item.number + "/merge";
     try {
@@ -2293,72 +2526,6 @@
     showPublishProgress("Merging the pull request.");
     await apiJson(path, { method: "PUT", body: { merge_method: "squash" } });
     return item;
-  }
-
-  async function triggerPublishWorkflow(item) {
-    var nonce = lib.publishNonce();
-    item.workflowNonce = nonce;
-    item.workflowAt = new Date().toISOString();
-    writePending(item);
-    await apiJson("/repos/" + item.repo + "/issues/" + item.number + "/comments", {
-      method: "POST",
-      body: { body: "fcb-publish:start " + nonce }
-    });
-    var dispatched = false;
-    try {
-      await apiJson("/repos/" + item.repo + "/actions/workflows/publish-approved.yml/dispatches", {
-        method: "POST",
-        body: {
-          ref: "main",
-          inputs: { pr: String(item.number), branch: item.branch || "", nonce: nonce }
-        }
-      });
-      dispatched = true;
-    } catch (err) {
-      if (err.status !== 403 && err.status !== 404 && err.status !== 422) throw err;
-    }
-    if (!dispatched) {
-      try {
-        await apiJson("/repos/" + item.repo + "/issues/" + item.number + "/labels/" + encodeURIComponent("approved"), {
-          method: "DELETE"
-        });
-      } catch (err) {
-        if (err.status !== 404) throw err;
-      }
-      await addLabel(item.repo, item.number, "approved", {
-        color: "0E8A16",
-        description: "Ryan approved this draft from the article editor"
-      });
-    }
-    return readPendingItem(item) || item;
-  }
-
-  async function waitForPublishWorkflow(item, generation) {
-    var wait = Number(window.RM_WORKFLOW_POLL_MS) || 4000;
-    var limit = Number(window.RM_WORKFLOW_POLL_LIMIT) || 180000;
-    var started = Date.now();
-    var nonce = item.workflowNonce || "";
-    var polls = 0;
-    var maxPolls = Math.max(1, Math.ceil(limit / wait));
-    while (polls < maxPolls && Date.now() - started <= limit) {
-      polls += 1;
-      if (generation !== publishGeneration) return { ok: false, cancelled: true };
-      var comments = await apiJson("/repos/" + item.repo + "/issues/" + item.number + "/comments?per_page=100");
-      var result = lib.publishWorkflowResult(comments, nonce);
-      if (result.status === "failed") {
-        var failed = new Error(result.message || "The shared pages were not published.");
-        failed.publishWorkflow = true;
-        throw failed;
-      }
-      if (result.status === "published") return { ok: true };
-      var pr = await apiJson("/repos/" + item.repo + "/pulls/" + item.number);
-      if (pr && pr.merged) return { ok: true };
-      if (Date.now() - started + wait > limit) break;
-      await delay(wait);
-    }
-    var timeout = new Error("The publish workflow did not finish.");
-    timeout.publishWorkflow = true;
-    throw timeout;
   }
 
   async function advancePublish(item) {
@@ -2384,33 +2551,49 @@
       item = readPendingItem(item) || item;
     }
     if (generation !== publishGeneration) return false;
-    item = await ensureReadyForReview(item);
-    if (generation !== publishGeneration) return false;
-    if (item.steps.workflow === "pending" && lib.usesPublishWorkflow(item.repo)) {
-      showPublishProgress("Rebuilding the news hub, homepage, ticker, and sitemaps, then publishing.");
-      item = await triggerPublishWorkflow(item);
-      item.steps.workflow = "done";
+    if (lib.usesPublishWorkflow(item.repo) && item.steps.workflow === "pending" && item.steps.sync !== "done") {
+      item.steps.sync = "pending";
+      item.steps.workflow = "skip";
       writePending(item);
       item = readPendingItem(item) || item;
     }
-    if (generation !== publishGeneration) return false;
-    if (item.steps.merge === "pending" && lib.usesPublishWorkflow(item.repo) && item.steps.workflow !== "skip") {
-      showPublishProgress("Waiting for the news hub, homepage, ticker, and sitemaps to publish.");
-      var workflow;
-      try {
-        workflow = await waitForPublishWorkflow(item, generation);
-      } catch (err) {
-        item.steps.workflow = "pending";
-        writePending(item);
-        throw err;
+    var integrated = null;
+    if (item.steps.sync === "pending" && lib.usesPublishWorkflow(item.repo)) {
+      integrated = await syncBranchWithMain(item, generation);
+      if (!integrated || integrated.cancelled) return false;
+      item = readPendingItem(item) || item;
+      item.steps.sync = integrated.alreadyMerged ? "skip" : "done";
+      item.steps.workflow = "skip";
+      item.syncTree = integrated.treeSha || "";
+      item.syncMain = integrated.mainSha || "";
+      if (integrated.alreadyMerged) {
+        item.steps.ready = "skip";
+        item.steps.merge = "done";
       }
-      if (!workflow || workflow.cancelled) return false;
-      item.steps.merge = "done";
       writePending(item);
       item = readPendingItem(item) || item;
-    } else if (item.steps.merge === "pending") {
+    } else if (item.syncTree && item.syncMain) {
+      integrated = { treeSha: item.syncTree, mainSha: item.syncMain };
+    }
+    if (generation !== publishGeneration) return false;
+    item = await ensureReadyForReview(item);
+    if (generation !== publishGeneration) return false;
+    if (item.steps.merge === "pending") {
       showPublishProgress("Merging the pull request.");
-      item = await mergePullRequest(item);
+      try {
+        item = await mergePullRequest(item);
+      } catch (err) {
+        var built = integrated || { treeSha: item.syncTree, mainSha: item.syncMain };
+        if (lib.usesPublishWorkflow(item.repo) && err && err.status === 403 && built.treeSha && built.mainSha) {
+          await pushSquashToMain(item, built);
+        } else if (lib.isMergeConflictError(err && err.status, err && err.message)) {
+          item.steps.sync = "pending";
+          writePending(item);
+          throw publishSyncError("Pull Request has merge conflicts.");
+        } else {
+          throw err;
+        }
+      }
       item.steps.merge = "done";
       writePending(item);
       item = readPendingItem(item) || item;
@@ -2444,7 +2627,7 @@
       card.append(
         el("h2", {}, "Publish this draft?"),
         el("p", {}, workflowRepo
-          ? "This saves your edits, marks a draft pull request ready for review, rebuilds the news hub, homepage, ticker, and sitemaps from the article, and publishes the page. The article stays as saved. If that fails, the live page stays as it is."
+          ? "This saves your edits, updates the branch with main, keeps the article as saved, rebuilds the news hub, homepage, ticker, and sitemaps, marks a draft ready for review, and publishes the page. If that fails, the live page stays as it is."
           : "This saves your edits, marks a draft pull request ready for review, squash-merges it, and publishes the page."),
         el("p", {}, ["Live URL: ", el("span", { class: "live-url" }, url)]),
         el("div", { class: "modal-actions" }, [
@@ -2459,13 +2642,14 @@
     if (!ok || lock) return;
     lock = true;
     var generation = publishGeneration;
-    showPublishProgress(state.dirty ? "Saving your edits." : "Checking whether the pull request is a draft.");
+    showPublishProgress(state.dirty ? "Saving your edits." : (workflowRepo ? "Updating the pull request with main." : "Checking whether the pull request is a draft."));
     var item = draftSnapshot(draft, "publish", {
       commit: state.dirty ? "pending" : "skip",
       comment: "skip",
       label: "skip",
       ready: "pending",
-      workflow: workflowRepo ? "pending" : "skip",
+      sync: workflowRepo ? "pending" : "skip",
+      workflow: "skip",
       merge: "pending",
       deploy: "pending"
     }, "");

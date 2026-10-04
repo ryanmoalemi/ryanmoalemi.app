@@ -410,7 +410,10 @@ h1.display {
 }
 .preview {
   width: 100%;
-  min-height: 70vh;
+  min-height: 0;
+  height: auto;
+  display: block;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: #fff;

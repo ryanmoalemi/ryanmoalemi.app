@@ -938,11 +938,396 @@ function publishWorkflowResult(comments, nonce) {
   return { status: "published", message: "" };
 }
 
+var SHARED_LISTING_EXACT = {
+  "articles.json": true,
+  "index.html": true,
+  "news/index.html": true,
+  "authors/ryan-moalemi/index.html": true,
+  "pages-sitemap.xml": true,
+  "sitemap.xml": true,
+  "sitemap/index.html": true
+};
+
+function isSharedListing(path) {
+  var name = String(path || "").replace(/\\/g, "/").replace(/^\.\//, "");
+  if (SHARED_LISTING_EXACT[name]) return true;
+  var parts = name.split("/");
+  return parts.length === 4 && parts[0] === "wnba" && parts[1] === "teams" && parts[3] === "index.html";
+}
+
+function isMergeConflictError(status, message) {
+  var text = String(message || "");
+  return Number(status) === 409 || /merge conflict/i.test(text);
+}
+
+function hasConflictMarkers(text) {
+  var value = String(text || "");
+  return value.indexOf("<<<<<<<") !== -1 || value.indexOf(">>>>>>>") !== -1;
+}
+
+function indexTree(entries) {
+  var map = {};
+  (entries || []).forEach(function (entry) {
+    if (!entry || entry.type === "tree" || !entry.path) return;
+    map[entry.path] = { sha: entry.sha || "", mode: entry.mode || "100644" };
+  });
+  return map;
+}
+
+function integrationPlan(baseEntries, mainEntries, headEntries) {
+  var base = indexTree(baseEntries);
+  var main = indexTree(mainEntries);
+  var head = indexTree(headEntries);
+  var paths = {};
+  Object.keys(base).forEach(function (path) { paths[path] = true; });
+  Object.keys(main).forEach(function (path) { paths[path] = true; });
+  Object.keys(head).forEach(function (path) { paths[path] = true; });
+  var overlay = [];
+  var protectedShas = {};
+  Object.keys(paths).forEach(function (path) {
+    if (isSharedListing(path)) return;
+    var baseSha = base[path] ? base[path].sha : "";
+    var mainSha = main[path] ? main[path].sha : "";
+    var headSha = head[path] ? head[path].sha : "";
+    var headMode = head[path] ? head[path].mode : "";
+    var mainMode = main[path] ? main[path].mode : "";
+    var prTouched = headSha !== baseSha;
+    var resultSha = prTouched ? headSha : mainSha;
+    var resultMode = prTouched ? headMode : mainMode;
+    if (prTouched && headSha) protectedShas[path] = headSha;
+    if (resultSha === mainSha) return;
+    overlay.push({
+      path: path,
+      mode: resultMode || "100644",
+      type: "blob",
+      sha: resultSha || null
+    });
+  });
+  return { overlay: overlay, protectedShas: protectedShas };
+}
+
+function protectedDrift(protectedShas, mainEntries, overlay) {
+  var main = indexTree(mainEntries);
+  var placed = {};
+  (overlay || []).forEach(function (entry) {
+    if (entry && entry.path && entry.sha) placed[entry.path] = entry.sha;
+  });
+  var drifted = "";
+  Object.keys(protectedShas || {}).forEach(function (path) {
+    if (drifted) return;
+    var want = protectedShas[path];
+    var have = placed[path] || (main[path] && main[path].sha) || "";
+    if (have !== want) drifted = path;
+  });
+  return drifted;
+}
+
+function mergeArticleLists(mainArticles, prArticles) {
+  var bySlug = {};
+  function take(list) {
+    (list || []).forEach(function (article) {
+      if (!article || typeof article !== "object") return;
+      var slug = String(article.slug || "").trim();
+      if (!slug) return;
+      bySlug[slug] = Object.assign({}, article);
+    });
+  }
+  take(mainArticles);
+  take(prArticles);
+  var ordered = [];
+  var seen = {};
+  function push(list) {
+    (list || []).forEach(function (article) {
+      if (!article || typeof article !== "object") return;
+      var slug = String(article.slug || "").trim();
+      if (!slug || seen[slug] || !bySlug[slug]) return;
+      seen[slug] = true;
+      ordered.push(bySlug[slug]);
+    });
+  }
+  push(prArticles);
+  push(mainArticles);
+  ordered.sort(function (a, b) {
+    var left = String(a.date || "");
+    var right = String(b.date || "");
+    if (left === right) return 0;
+    return left < right ? 1 : -1;
+  });
+  return ordered;
+}
+
+function articleSlugOk(slug) {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(String(slug || ""));
+}
+
+function articleHref(article) {
+  var slug = String(article && article.slug || "").trim().replace(/^\/+|\/+$/g, "");
+  if (!articleSlugOk(slug)) return "";
+  return "/news/" + slug + "/";
+}
+
+function prepareArticles(mainArticles, prArticles) {
+  return mergeArticleLists(mainArticles, prArticles).map(function (article) {
+    var href = articleHref(article);
+    var ordered = {};
+    ["slug", "url", "title", "description", "category", "date", "image", "imageAlt"].forEach(function (key) {
+      if (key === "url") {
+        if (href) ordered.url = href;
+      } else if (Object.prototype.hasOwnProperty.call(article, key)) {
+        ordered[key] = article[key];
+      }
+    });
+    Object.keys(article).forEach(function (key) {
+      if (!Object.prototype.hasOwnProperty.call(ordered, key)) ordered[key] = article[key];
+    });
+    return ordered;
+  }).filter(function (article) { return articleHref(article); });
+}
+
+function orderedArticles(articles) {
+  return (articles || []).slice().sort(function (a, b) {
+    var left = String(a && a.date || "");
+    var right = String(b && b.date || "");
+    if (left === right) return 0;
+    return left < right ? 1 : -1;
+  });
+}
+
+function escHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
+function formatStoryDate(iso) {
+  var parts = String(iso || "").split("-");
+  if (parts.length < 3) return "";
+  var months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var month = months[Number(parts[1]) - 1];
+  var day = Number(parts[2]);
+  if (!month || !day) return "";
+  return month + " " + day + ", " + parts[0];
+}
+
+function newsListItem(article) {
+  var title = String(article.title || "");
+  var summary = String(article.description || "");
+  var image = String(article.image || "");
+  var alt = String(article.imageAlt || title);
+  var when = String(article.date || "");
+  var label = formatStoryDate(when);
+  var thumb = image ? '<img src="' + escHtml(image) + '" alt="' + escHtml(alt) + '">' : "";
+  return '<li><a class="news-item" href="' + escHtml(articleHref(article)) + '">' + thumb +
+    '<span class="news-copy"><time datetime="' + escHtml(when) + '">' + escHtml(label) + "</time>" +
+    "<h2>" + escHtml(title) + "</h2><p>" + escHtml(summary) + "</p></span></a></li>";
+}
+
+function storyCard(article) {
+  var title = String(article.title || "");
+  var image = String(article.image || "");
+  var alt = String(article.imageAlt || title);
+  return '<a class="article-card" href="' + escHtml(articleHref(article)) + '">' +
+    '<div class="article-visual"><img src="' + escHtml(image) + '" alt="' + escHtml(alt) + '"></div>' +
+    '<div class="article-copy"><div class="cat">' + escHtml(article.category || "") + "</div>" +
+    "<h3>" + escHtml(title) + "</h3><p>" + escHtml(article.description || "") + "</p>" +
+    '<div class="date">' + escHtml(formatStoryDate(article.date)) + "</div></div></a>";
+}
+
+function replaceMarked(text, name, inner) {
+  var pattern = new RegExp("<!-- " + name + ":start -->[\\s\\S]*?<!-- " + name + ":end -->");
+  var block = "<!-- " + name + ":start -->" + inner + "<!-- " + name + ":end -->";
+  if (pattern.test(text)) return text.replace(pattern, block);
+  return text;
+}
+
+function applyHomepageStories(text, articles) {
+  var html = String(text || "");
+  if (html.indexOf('id="latest"') === -1 || html.indexOf('id="older-stories"') === -1) return html;
+  var ordered = orderedArticles(articles);
+  if (!ordered.length) return html;
+  var featured = ordered[0];
+  var href = articleHref(featured);
+  html = html.replace(/(<a class="feature feature-link" id="featured-story" href=")[^"]*(")/, function (match, open, close) {
+    return open + href + close;
+  });
+  html = html.replace(/(<h1 id="featured-title">)[\s\S]*?(<\/h1>)/, function (match, open, close) {
+    return open + escHtml(featured.title || "") + close;
+  });
+  html = html.replace(/(<p id="featured-dek">)[\s\S]*?(<\/p>)/, function (match, open, close) {
+    return open + escHtml(featured.description || "") + close;
+  });
+  var meta = String(featured.category || "") + " · " + formatStoryDate(featured.date);
+  html = html.replace(/(<div class="meta" id="featured-meta">)[\s\S]*?(<\/div>)/, function (match, open, close) {
+    return open + escHtml(meta) + close;
+  });
+  var cards = ordered.slice(1).map(storyCard).join("");
+  if (html.indexOf("<!-- fcb-stories:start -->") !== -1) {
+    html = replaceMarked(html, "fcb-stories", cards);
+  } else {
+    html = html.replace(
+      '<div class="story-list" id="older-stories"></div>',
+      '<div class="story-list" id="older-stories"><!-- fcb-stories:start -->' + cards + "<!-- fcb-stories:end --></div>"
+    );
+  }
+  return html;
+}
+
+function articleTickerInner(html) {
+  var match = /<div class="ticker-text">([\s\S]*?)<\/div>/.exec(String(html || ""));
+  return match ? match[1] : "";
+}
+
+function applyHomepageTicker(html, inner) {
+  var text = String(html || "");
+  if (!inner || text.indexOf('<div class="ticker-text">') === -1) return text;
+  var used = false;
+  return text.replace(/<div class="ticker-text">[\s\S]*?<\/div>/, function (match) {
+    if (used) return match;
+    used = true;
+    return match.slice(0, match.indexOf(">") + 1) + inner + "</div>";
+  });
+}
+
+function replaceNewsList(html, articles) {
+  var text = String(html || "");
+  if (text.indexOf('class="news-list"') === -1) return text;
+  var cards = orderedArticles(articles).map(newsListItem).join("");
+  return text.replace(/<ol class="news-list">[\s\S]*?<\/ol>/, '<ol class="news-list">' + cards + "</ol>");
+}
+
+function syncNewsSitemap(text, articles) {
+  var xml = String(text || "");
+  if (xml.indexOf("</urlset>") === -1) return xml;
+  var base = "https://fullcourtbuckets.com";
+  (articles || []).forEach(function (article) {
+    var href = articleHref(article);
+    if (!href) return;
+    var slug = String(article.slug || "").trim();
+    var oldLoc = base + "/" + slug + "/";
+    var next = base + href;
+    xml = xml.replace(new RegExp("(<loc>\\s*)" + oldLoc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s*</loc>)"), function (match, open, close) {
+      return open + next + close;
+    });
+    if (xml.indexOf(next) === -1) {
+      var lastmod = String(article.date || "2026-09-29");
+      var block = "  <url>\n    <loc>" + next + "</loc>\n    <lastmod>" + lastmod + "</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n";
+      xml = xml.replace("</urlset>", block + "</urlset>");
+    }
+  });
+  var hub = base + "/news/";
+  if (!new RegExp("<loc>\\s*" + hub.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*</loc>").test(xml)) {
+    xml = xml.replace("</urlset>", "  <url>\n    <loc>" + hub + "</loc>\n    <lastmod>2026-09-29</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n</urlset>");
+  }
+  return xml;
+}
+
+function sitemapNewsSection(articles, hasCouples) {
+  var items = [];
+  orderedArticles(articles).forEach(function (article) {
+    var href = articleHref(article);
+    if (!href) return;
+    items.push("<li><a href=\"" + escHtml(href) + "\">" + escHtml(article.title || article.slug) + "</a></li>");
+  });
+  if (hasCouples) items.push('<li><a href="/wnba/couples/">WNBA Couples</a></li>');
+  if (!items.length) return "";
+  return '<section class="section" id="sitemap-news"><h2>News</h2><ul class="sitemap-list">' + items.join("") + "</ul></section>";
+}
+
+function refreshSitemapNews(html, articles, hasCouples) {
+  var text = String(html || "");
+  var section = sitemapNewsSection(articles, hasCouples);
+  if (!section || text.indexOf('id="sitemap-news"') === -1) return text;
+  return text.replace(/<section class="section" id="sitemap-news">[\s\S]*?<\/section>/, section);
+}
+
+function teamNewsSection(articles, teamSlug) {
+  var slug = String(teamSlug || "");
+  var name = slug.split("-").filter(Boolean).map(function (part) {
+    return part.charAt(0).toUpperCase() + part.slice(1);
+  }).join(" ");
+  var items = [];
+  orderedArticles(articles).forEach(function (article) {
+    var title = String(article.title || "").trim();
+    if (!title || !articleHref(article)) return;
+    var teams = Array.isArray(article.teams) ? article.teams : [];
+    var blob = title + " " + String(article.description || "");
+    var named = false;
+    if (name) {
+      var pattern = new RegExp("(^|[^A-Za-z0-9])" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "([^A-Za-z0-9]|$)");
+      named = pattern.test(blob);
+    }
+    if (teams.indexOf(slug) === -1 && !named) return;
+    items.push('<li><a class="inline-link" href="' + escHtml(articleHref(article)) + '">' + escHtml(title) + "</a></li>");
+  });
+  if (!items.length) return "";
+  return '<section class="section" id="team-news"><p class="eyebrow">News</p><h2>Latest stories</h2><ul class="teammate-list">' + items.join("") + "</ul></section>";
+}
+
+function refreshTeamNews(html, section) {
+  var text = String(html || "");
+  var pattern = /<section class="section" id="team-news">[\s\S]*?<\/section>/;
+  if (pattern.test(text)) return text.replace(pattern, section || "");
+  if (!section) return text;
+  var needle = 'href="/wnba/teams/"';
+  var index = text.indexOf(needle);
+  if (index === -1) return text;
+  var start = text.lastIndexOf("<p", index);
+  if (start === -1) return text;
+  return text.slice(0, start) + section + text.slice(start);
+}
+
+function rebuildSharedTexts(texts, articles, tickerInner, hasCouples) {
+  var out = {};
+  var conflict = "";
+  function put(path, value) {
+    if (value == null) return;
+    if (!conflict && hasConflictMarkers(value)) conflict = path;
+    out[path] = value;
+  }
+  if (texts && texts["index.html"] != null) {
+    put("index.html", applyHomepageTicker(applyHomepageStories(texts["index.html"], articles), tickerInner));
+  }
+  if (texts && texts["news/index.html"] != null) put("news/index.html", replaceNewsList(texts["news/index.html"], articles));
+  if (texts && texts["authors/ryan-moalemi/index.html"] != null) {
+    put("authors/ryan-moalemi/index.html", replaceNewsList(texts["authors/ryan-moalemi/index.html"], articles));
+  }
+  ["pages-sitemap.xml", "sitemap.xml"].forEach(function (name) {
+    if (texts && texts[name] != null) put(name, syncNewsSitemap(texts[name], articles));
+  });
+  if (texts && texts["sitemap/index.html"] != null) {
+    put("sitemap/index.html", refreshSitemapNews(texts["sitemap/index.html"], articles, hasCouples));
+  }
+  Object.keys(texts || {}).forEach(function (path) {
+    var match = /^wnba\/teams\/([^/]+)\/index\.html$/.exec(path);
+    if (!match) return;
+    put(path, refreshTeamNews(texts[path], teamNewsSection(articles, match[1])));
+  });
+  return { files: out, conflict: conflict };
+}
+
+function decodeGitBlob(blob) {
+  var encoding = String(blob && blob.encoding || "");
+  var content = String(blob && blob.content || "");
+  if (encoding === "base64") {
+    var clean = content.replace(/\s/g, "");
+    if (typeof Buffer !== "undefined") return Buffer.from(clean, "base64").toString("utf8");
+    var binary = atob(clean);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+  return content;
+}
+
 function pendingNeeds(item) {
   var steps = item && item.steps || {};
   var needs = [];
-  if (steps.commit === "pending") needs.push(PERMISSION_CONTENTS);
+  if (steps.commit === "pending" || steps.sync === "pending") needs.push(PERMISSION_CONTENTS);
   if (steps.comment === "pending" || steps.label === "pending" || steps.ready === "pending" || steps.workflow === "pending" || steps.merge === "pending") needs.push(PERMISSION_PULLS);
+  if (steps.sync === "pending" && needs.indexOf(PERMISSION_PULLS) === -1) needs.push(PERMISSION_PULLS);
   return needs;
 }
 
@@ -997,13 +1382,16 @@ function parsePending(raw) {
         comment: step("comment", "skip"),
         label: step("label", "skip"),
         ready: step("ready", "skip"),
+        sync: step("sync", "skip"),
         workflow: step("workflow", "skip"),
         merge: step("merge", "skip"),
         deploy: step("deploy", "skip")
       },
       savedAt: String(data.savedAt || ""),
       liveUrl: String(data.liveUrl || ""),
-      workflowNonce: String(data.workflowNonce || "")
+      workflowNonce: String(data.workflowNonce || ""),
+      syncTree: String(data.syncTree || ""),
+      syncMain: String(data.syncMain || "")
     };
   } catch (err) {
     return null;
@@ -1080,7 +1468,7 @@ function formatPacificTime(date) {
 
 function pendingDone(item) {
   if (!item || !item.steps) return false;
-  var names = ["commit", "comment", "label", "ready", "workflow", "merge", "deploy"];
+  var names = ["commit", "comment", "label", "ready", "sync", "workflow", "merge", "deploy"];
   for (var i = 0; i < names.length; i++) {
     var value = item.steps[names[i]];
     if (value !== "done" && value !== "skip") return false;
@@ -1178,6 +1566,22 @@ function heroPresent(doc, hero) {
     usesPublishWorkflow: usesPublishWorkflow,
     publishNonce: publishNonce,
     publishWorkflowResult: publishWorkflowResult,
+    isSharedListing: isSharedListing,
+    isMergeConflictError: isMergeConflictError,
+    hasConflictMarkers: hasConflictMarkers,
+    indexTree: indexTree,
+    integrationPlan: integrationPlan,
+    protectedDrift: protectedDrift,
+    mergeArticleLists: mergeArticleLists,
+    prepareArticles: prepareArticles,
+    articleHref: articleHref,
+    applyHomepageStories: applyHomepageStories,
+    articleTickerInner: articleTickerInner,
+    applyHomepageTicker: applyHomepageTicker,
+    replaceNewsList: replaceNewsList,
+    syncNewsSitemap: syncNewsSitemap,
+    rebuildSharedTexts: rebuildSharedTexts,
+    decodeGitBlob: decodeGitBlob,
     isDraftMergeError: isDraftMergeError,
     graphqlAccessError: graphqlAccessError,
     graphqlMessage: graphqlMessage,

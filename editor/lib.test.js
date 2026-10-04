@@ -308,7 +308,68 @@ var workflowPending = lib.parsePending({
 });
 assert.strictEqual(workflowPending.steps.workflow, "pending");
 assert.strictEqual(workflowPending.workflowNonce, workflowNonce);
+assert.strictEqual(workflowPending.steps.sync, "skip");
 assert.strictEqual(lib.pendingDone(workflowPending), false);
+assert.strictEqual(lib.isSharedListing("index.html"), true);
+assert.strictEqual(lib.isSharedListing("news/index.html"), true);
+assert.strictEqual(lib.isSharedListing("news/story/index.html"), false);
+assert.strictEqual(lib.isSharedListing("wnba/teams/atlanta-dream/index.html"), true);
+assert.strictEqual(lib.isSharedListing("images/hero.webp"), false);
+assert.strictEqual(lib.isMergeConflictError(409, "Pull Request has merge conflicts"), true);
+assert.strictEqual(lib.isMergeConflictError(200, "ok"), false);
+var mergedArticles = lib.prepareArticles(
+  [
+    { slug: "older-story", title: "Older", date: "2026-10-01", description: "Old" },
+    { slug: "shared-story", title: "Main title", date: "2026-10-02", description: "From main" }
+  ],
+  [{ slug: "shared-story", title: "PR title", date: "2026-10-04", description: "From the draft", teams: ["atlanta-dream"] }]
+);
+assert.strictEqual(mergedArticles[0].title, "PR title");
+assert.strictEqual(mergedArticles[0].url, "/news/shared-story/");
+assert.strictEqual(mergedArticles[1].slug, "older-story");
+assert.strictEqual(mergedArticles.length, 2);
+var plan = lib.integrationPlan(
+  [
+    { path: "index.html", mode: "100644", type: "blob", sha: "basehome" },
+    { path: "news/story/index.html", mode: "100644", type: "blob", sha: "basepost" }
+  ],
+  [
+    { path: "index.html", mode: "100644", type: "blob", sha: "mainhome" },
+    { path: "news/story/index.html", mode: "100644", type: "blob", sha: "basepost" },
+    { path: "news/index.html", mode: "100644", type: "blob", sha: "mainhub" }
+  ],
+  [
+    { path: "index.html", mode: "100644", type: "blob", sha: "prhome" },
+    { path: "news/story/index.html", mode: "100644", type: "blob", sha: "prpost" },
+    { path: "news/index.html", mode: "100644", type: "blob", sha: "prhub" },
+    { path: "images/a.webp", mode: "100644", type: "blob", sha: "primg" }
+  ]
+);
+assert.deepStrictEqual(plan.overlay.map(function (entry) { return entry.path + ":" + entry.sha; }).sort(), ["images/a.webp:primg", "news/story/index.html:prpost"]);
+assert.strictEqual(plan.protectedShas["news/story/index.html"], "prpost");
+assert.strictEqual(lib.protectedDrift(plan.protectedShas, [{ path: "news/story/index.html", type: "blob", sha: "basepost" }], plan.overlay), "");
+var home = '<div id="latest"></div><a class="feature feature-link" id="featured-story" href="/old/"><img class="feature-photo" id="featured-image" src="/old.jpg" alt="Old"></a><h1 id="featured-title">Old</h1><p id="featured-dek">Old dek</p><div class="meta" id="featured-meta">Old</div><div class="story-list" id="older-stories"></div><section id="roster">Roster stays</section><div class="ticker-text">OLD TICKER</div>';
+var rebuilt = lib.rebuildSharedTexts({
+  "index.html": home,
+  "news/index.html": "<header>Keep this header</header><ol class=\"news-list\"><li>old</li></ol>",
+  "pages-sitemap.xml": "<urlset>\n  <url><loc>https://fullcourtbuckets.com/old/</loc></url>\n</urlset>",
+  "wnba/teams/atlanta-dream/index.html": "<section class=\"section\" id=\"team-news\"><p>Old news</p></section><p><a href=\"/wnba/teams/\">Teams</a></p>"
+}, mergedArticles, "NEW TICKER", false);
+assert.strictEqual(rebuilt.conflict, "");
+assert.ok(rebuilt.files["index.html"].indexOf("PR title") !== -1);
+assert.ok(rebuilt.files["index.html"].indexOf("NEW TICKER") !== -1);
+assert.ok(rebuilt.files["index.html"].indexOf("Roster stays") !== -1);
+assert.ok(rebuilt.files["index.html"].indexOf("OLD TICKER") === -1);
+assert.ok(rebuilt.files["news/index.html"].indexOf("Keep this header") !== -1);
+assert.ok(rebuilt.files["news/index.html"].indexOf("/news/shared-story/") !== -1);
+assert.ok(rebuilt.files["news/index.html"].indexOf("/news/older-story/") !== -1);
+assert.ok(rebuilt.files["pages-sitemap.xml"].indexOf("https://fullcourtbuckets.com/news/shared-story/") !== -1);
+assert.ok(rebuilt.files["wnba/teams/atlanta-dream/index.html"].indexOf("PR title") !== -1);
+assert.ok(rebuilt.files["wnba/teams/atlanta-dream/index.html"].indexOf("Teams") !== -1);
+var marked = lib.rebuildSharedTexts({ "index.html": home + "\n<<<<<<<" }, mergedArticles, "", false);
+assert.strictEqual(marked.conflict, "index.html");
+assert.strictEqual(lib.decodeGitBlob({ encoding: "base64", content: Buffer.from("article bytes", "utf8").toString("base64") }), "article bytes");
+assert.strictEqual(lib.articleTickerInner('<div class="ticker-text">NEW TICKER</div>'), "NEW TICKER");
 assert.deepStrictEqual(lib.blockedPermissions(pending, [{ repo: "ryanmoalemi/fullcourtbuckets", pullsRead: true, pullsWrite: false, contentsRead: true, contentsWrite: true }]), []);
 pending.steps.comment = "pending";
 assert.deepStrictEqual(
@@ -518,7 +579,7 @@ var failResult = chromeDumpBudget(failFile, 12000);
 if (failResult !== "PASS") throw new Error("saved note was not kept: " + (failResult || "no result"));
 console.log("saved note test passed");
 
-function draftFetch(mode, repoName) {
+function draftFetch(mode, repoName, articleHtml) {
   var repo = repoName || "ryanmoalemi/fullcourtbuckets";
   var review = {
     site: "fullcourtbuckets.com",
@@ -532,7 +593,7 @@ function draftFetch(mode, repoName) {
     unverified: [],
     scorecard: { overall: 8, max: 10 }
   };
-  var article = "<!DOCTYPE html><html><head><title>Full court buckets</title></head><body><article><h1>Full court buckets</h1><p>Hello.</p></article></body></html>";
+  var article = articleHtml || "<!DOCTYPE html><html><head><title>Full court buckets</title></head><body><article><h1>Full court buckets</h1><p>Hello.</p></article></body></html>";
   var pr = {
     state: "open",
     draft: mode !== "direct",
@@ -542,23 +603,36 @@ function draftFetch(mode, repoName) {
     title: "Full court buckets",
     created_at: "2026-10-04T18:00:00Z",
     html_url: "https://github.com/" + repo + "/pull/84",
+    base: { ref: "main" },
     head: { sha: "abc84", ref: "draft-84", repo: { full_name: repo } },
     labels: [{ name: "review" }]
   };
+  var blobs = {
+    artsha: JSON.stringify([{ slug: "full-court-buckets", title: "Full court buckets", description: "A search line about the draft.", date: "2026-10-04", category: "News" }]),
+    homesha: '<div id="latest"></div><a class="feature feature-link" id="featured-story" href="/old/">x</a><h1 id="featured-title">Old</h1><p id="featured-dek">Old dek</p><div class="meta" id="featured-meta">Old</div><div class="story-list" id="older-stories"></div><section id="roster">Roster stays</section><div class="ticker-text">OLD TICKER</div>',
+    hubsha: '<header>Keep this header</header><ol class="news-list"><li>old</li></ol>',
+    postsha: '<div class="ticker-text">NEW TICKER</div><h1>Full court buckets</h1>'
+  };
+  var tree = [
+    { path: "articles.json", mode: "100644", type: "blob", sha: "artsha" },
+    { path: "index.html", mode: "100644", type: "blob", sha: "homesha" },
+    { path: "news/index.html", mode: "100644", type: "blob", sha: "hubsha" },
+    { path: "news/full-court-buckets/index.html", mode: "100644", type: "blob", sha: "postsha" },
+    { path: "notes/full-court-buckets/index.html", mode: "100644", type: "blob", sha: "notessha" }
+  ];
   return "location.hash='#review?repo=" + repo + "&pr=84';" +
-    "window.__order=[];window.__denyReady=" + (mode === "deny" ? "true" : "false") + ";" +
-    "window.__dispatchFail=" + (mode === "conflict" ? "true" : "false") + ";" +
-    "window.__failWorkflow=" + (mode === "conflict" ? "true" : "false") + ";" +
+    "window.__order=[];window.__written='';window.__commit='';window.__mainPatched=false;window.__denyReady=" + (mode === "deny" ? "true" : "false") + ";" +
+    "window.__failSync=" + (mode === "conflict" ? "true" : "false") + ";" +
+    "window.__failMerge=" + (mode === "forbidden" ? "true" : "false") + ";" +
     "window.RM_LIVE_POLL_MS=30;window.RM_LIVE_POLL_LIMIT=2000;" +
-    "window.RM_WORKFLOW_POLL_MS=30;window.RM_WORKFLOW_POLL_LIMIT=2000;" +
-    "var PR=" + JSON.stringify(pr) + ";var REVIEW=" + JSON.stringify(review) + ";var ARTICLE=" + JSON.stringify(article) + ";" +
-    "window.fetch=function(url,opts){var href=String(url);var method=(opts&&opts.method)||'GET';var bodyText=opts&&opts.body?String(opts.body):'';function respond(status,body,type){return Promise.resolve(new Response(typeof body==='string'?body:JSON.stringify(body),{status:status,headers:{'Content-Type':type||'application/json'}}));}if(href.indexOf('api.github.com')===-1)return respond(200,'<h1>Full court buckets</h1>','text/html');if(href.indexOf('/graphql')!==-1){window.__order.push('ready');window.__readyBody=bodyText;if(window.__denyReady)return respond(403,{message:'Resource not accessible by personal access token'});return respond(200,{data:{markPullRequestReadyForReview:{pullRequest:{isDraft:false}}}});}if(method==='POST'&&href.indexOf('/dispatches')!==-1){window.__order.push('workflow');window.__dispatch=href;window.__dispatchBody=bodyText;if(window.__dispatchFail)return respond(404,{message:'Not Found'});return Promise.resolve(new Response(null,{status:204}));}if(method==='POST'&&href.indexOf('/comments')!==-1){var posted=JSON.parse(bodyText||'{}');if(String(posted.body||'').indexOf('fcb-publish:start')===0){window.__order.push('start');window.__nonce=String(posted.body).split(/\\s+/)[1];}return respond(200,{id:9,body:posted.body});}if(method==='GET'&&href.indexOf('/comments')!==-1){var nonce=window.__nonce||'missing';if(window.__failWorkflow)return respond(200,[{id:1,body:'fcb-publish:failed '+nonce+'\\nThe shared listings were rebuilt, but main was not changed.',created_at:new Date().toISOString()}]);return respond(200,[{id:2,body:'fcb-publish:published '+nonce,created_at:new Date().toISOString()}]);}if(method==='DELETE'&&href.indexOf('/labels/approved')!==-1)return respond(404,{message:'Not Found'});if(method==='POST'&&href.indexOf('/labels')!==-1){window.__order.push('label');return respond(200,[{name:'approved'}]);}if(method==='PUT'&&href.indexOf('/merge')!==-1){window.__order.push('merge');return respond(200,{merged:true});}if(href.indexOf('/pulls/84')!==-1&&href.indexOf('/files')===-1)return respond(200,PR);if(href.indexOf('review/buckets.json')!==-1)return respond(200,JSON.stringify(REVIEW),'text/plain');if(href.indexOf('/contents/review')!==-1)return respond(200,[{type:'file',name:'buckets.json'}]);if(href.indexOf('index.html')!==-1)return respond(200,ARTICLE,'text/html');if(href.indexOf('/pulls')!==-1)return respond(200,[]);return respond(200,{});};";
+    "var PR=" + JSON.stringify(pr) + ";var REVIEW=" + JSON.stringify(review) + ";var ARTICLE=" + JSON.stringify(article) + ";var BLOBS=" + JSON.stringify(blobs) + ";var TREE=" + JSON.stringify(tree) + ";" +
+    "window.fetch=function(url,opts){var href=String(url);var method=(opts&&opts.method)||'GET';var bodyText=opts&&opts.body?String(opts.body):'';function respond(status,body,type){return Promise.resolve(new Response(typeof body==='string'?body:JSON.stringify(body),{status:status,headers:{'Content-Type':type||'application/json'}}));}if(href.indexOf('api.github.com')===-1)return respond(200,'<h1>Full court buckets</h1>','text/html');if(href.indexOf('/graphql')!==-1){window.__order.push('ready');window.__readyBody=bodyText;if(window.__denyReady)return respond(403,{message:'Resource not accessible by personal access token'});return respond(200,{data:{markPullRequestReadyForReview:{pullRequest:{isDraft:false}}}});}if(method==='PUT'&&href.indexOf('/merge')!==-1){window.__order.push('merge');if(window.__failMerge)return respond(403,{message:'Resource not accessible by personal access token'});return respond(200,{merged:true});}if(method==='PATCH'&&href.indexOf('/git/refs/heads/main')!==-1){window.__order.push('main');window.__mainPatched=true;return respond(200,{object:{sha:'squashsha'}});}if(method==='PATCH'&&href.indexOf('/git/refs/heads/')!==-1){window.__order.push('sync');return respond(200,{object:{sha:'commitsha'}});}if(method==='POST'&&href.indexOf('/git/blobs')!==-1){var posted=JSON.parse(bodyText||'{}');window.__written+='\\n'+(posted.content||'');return respond(200,{sha:'newblob'});}if(method==='POST'&&href.indexOf('/git/trees')!==-1){return respond(200,{sha:'newtree'});}if(method==='POST'&&href.indexOf('/git/commits')!==-1){window.__commit=bodyText;return respond(200,{sha:'commitsha',tree:{sha:'newtree'}});}if(method==='GET'&&href.indexOf('/git/ref/heads/main')!==-1)return respond(200,{object:{sha:'mainsha'}});if(method==='GET'&&href.indexOf('/git/ref/heads/')!==-1)return respond(200,{object:{sha:'headsha'}});if(href.indexOf('/compare/')!==-1){if(window.__failSync)return respond(409,{message:'Pull Request has merge conflicts'});return respond(200,{status:'diverged',ahead_by:1,behind_by:1,merge_base_commit:{sha:'basesha'}});}if(method==='GET'&&href.indexOf('/git/commits/')!==-1)return respond(200,{sha:'commitsha',tree:{sha:'treesha'}});if(href.indexOf('/git/trees/')!==-1)return respond(200,{sha:'treesha',truncated:false,tree:TREE});if(href.indexOf('/git/blobs/')!==-1){var sha=href.split('/git/blobs/')[1].split('?')[0];return respond(200,{content:btoa(BLOBS[sha]||'notes'),encoding:'base64'});}if(href.indexOf('/pulls/84')!==-1&&href.indexOf('/files')===-1)return respond(200,PR);if(href.indexOf('review/buckets.json')!==-1)return respond(200,JSON.stringify(REVIEW),'text/plain');if(href.indexOf('/contents/review')!==-1)return respond(200,[{type:'file',name:'buckets.json'}]);if(href.indexOf('index.html')!==-1)return respond(200,ARTICLE,'text/html');if(href.indexOf('/pulls')!==-1)return respond(200,[]);return respond(200,{});};";
 }
 
 var draftFile = path.join(os.tmpdir(), "editor-draft-publish-test.html");
 fs.writeFileSync(draftFile, flowPage(
   "localStorage.clear();localStorage.setItem('rm-editor-token','github_pat_draft');" + draftFetch("ok"),
-  "var tries=0;function check(){tries+=1;var button=document.getElementById('publish');var title=document.getElementById('review-title');if(!window.__clicked&&button&&title&&title.textContent.indexOf('Full court')!==-1){window.__clicked=true;button.click();var ok=document.getElementById('modal-ok');if(ok)ok.click();}var banner=document.querySelector('.banner.publish-result')||document.querySelector('.banner');var text=banner?banner.textContent:'';var order=(window.__order||[]).join(',');var body=window.__readyBody||'';var dispatch=window.__dispatch||'';var dispatchBody=window.__dispatchBody||'';if(text.indexOf('Published')!==-1&&order==='ready,start,workflow'&&order.indexOf('merge')===-1&&body.indexOf('markPullRequestReadyForReview')!==-1&&body.indexOf('PR_kwDO84')!==-1&&dispatch.indexOf('publish-approved.yml')!==-1&&dispatchBody.indexOf('\"pr\":\"84\"')!==-1&&text.indexOf('View post')!==-1&&text.indexOf('Back to drafts')!==-1&&text.indexOf('PT')!==-1){document.documentElement.setAttribute('data-result','PASS');return;}if(tries>140){document.documentElement.setAttribute('data-result','FAIL '+order+' '+(text||'no banner'));return;}setTimeout(check,40);}setTimeout(check,20);"
+  "var tries=0;function check(){tries+=1;var button=document.getElementById('publish');var title=document.getElementById('review-title');if(!window.__clicked&&button&&title&&title.textContent.indexOf('Full court')!==-1){window.__clicked=true;button.click();var ok=document.getElementById('modal-ok');if(ok)ok.click();}var banner=document.querySelector('.banner.publish-result')||document.querySelector('.banner');var text=banner?banner.textContent:'';var order=(window.__order||[]).join(',');var body=window.__readyBody||'';var written=window.__written||'';var commit=window.__commit||'';if(text.indexOf('Published')!==-1&&order==='sync,ready,merge'&&!window.__mainPatched&&body.indexOf('markPullRequestReadyForReview')!==-1&&body.indexOf('PR_kwDO84')!==-1&&written.indexOf('NEW TICKER')!==-1&&written.indexOf('Keep this header')!==-1&&written.indexOf('/news/full-court-buckets/')!==-1&&written.indexOf('Roster stays')!==-1&&commit.indexOf('headsha')!==-1&&commit.indexOf('mainsha')!==-1&&text.indexOf('View post')!==-1&&text.indexOf('Back to drafts')!==-1&&text.indexOf('PT')!==-1){document.documentElement.setAttribute('data-result','PASS');return;}if(tries>160){document.documentElement.setAttribute('data-result','FAIL '+order+' main='+window.__mainPatched+' '+(text||'no banner')+' '+written.slice(0,180));return;}setTimeout(check,40);}setTimeout(check,20);"
 ));
 var draftResult = chromeDumpBudget(draftFile, 14000);
 if (draftResult !== "PASS") throw new Error("draft pull request was not marked ready before merge: " + (draftResult || "no result"));
@@ -567,7 +641,7 @@ console.log("draft publish test passed");
 var draftDenyFile = path.join(os.tmpdir(), "editor-draft-deny-test.html");
 fs.writeFileSync(draftDenyFile, flowPage(
   "localStorage.clear();localStorage.setItem('rm-editor-token','github_pat_draftdeny');" + draftFetch("deny"),
-  "var tries=0;var phase='fail';function check(){tries+=1;var button=document.getElementById('publish');var title=document.getElementById('review-title');if(!window.__clicked&&button&&title&&title.textContent.indexOf('Full court')!==-1){window.__clicked=true;button.click();var ok=document.getElementById('modal-ok');if(ok)ok.click();}var banner=document.querySelector('.banner:not(.permission)');var text=banner?banner.textContent:'';var retry=document.getElementById('retry-pending');var order=(window.__order||[]).join(',');var stored=localStorage.getItem('rm-editor-pending:ryanmoalemi/fullcourtbuckets:84:review/buckets.json');if(phase==='fail'){if(retry&&retry.textContent==='Retry'&&text.indexOf('still a draft')!==-1&&text.indexOf('was not merged')!==-1&&text.indexOf('live page was not changed')!==-1&&text.indexOf('Pull requests: Read and write')!==-1&&text.indexOf('fullcourtbuckets')!==-1&&text.indexOf('Resource not accessible')===-1&&order==='ready'&&stored){phase='retry';window.__denyReady=false;retry.click();tries=0;setTimeout(check,40);return;}if(tries>140){document.documentElement.setAttribute('data-result','FAIL '+order+' '+(text||'no banner'));return;}setTimeout(check,40);return;}if(text.indexOf('Published')!==-1&&order==='ready,ready,start,workflow'&&!localStorage.getItem('rm-editor-pending:ryanmoalemi/fullcourtbuckets:84:review/buckets.json')){document.documentElement.setAttribute('data-result','PASS');return;}if(tries>140){document.documentElement.setAttribute('data-result','FAIL retry '+order+' '+(text||'no banner'));return;}setTimeout(check,40);}setTimeout(check,20);"
+  "var tries=0;var phase='fail';function check(){tries+=1;var button=document.getElementById('publish');var title=document.getElementById('review-title');if(!window.__clicked&&button&&title&&title.textContent.indexOf('Full court')!==-1){window.__clicked=true;button.click();var ok=document.getElementById('modal-ok');if(ok)ok.click();}var banner=document.querySelector('.banner:not(.permission)');var text=banner?banner.textContent:'';var retry=document.getElementById('retry-pending');var order=(window.__order||[]).join(',');var stored=localStorage.getItem('rm-editor-pending:ryanmoalemi/fullcourtbuckets:84:review/buckets.json');if(phase==='fail'){if(retry&&retry.textContent==='Retry'&&text.indexOf('still a draft')!==-1&&text.indexOf('was not merged')!==-1&&text.indexOf('live page was not changed')!==-1&&text.indexOf('Pull requests: Read and write')!==-1&&text.indexOf('fullcourtbuckets')!==-1&&text.indexOf('Resource not accessible')===-1&&order==='sync,ready'&&stored&&!window.__mainPatched){phase='retry';window.__denyReady=false;retry.click();tries=0;setTimeout(check,40);return;}if(tries>160){document.documentElement.setAttribute('data-result','FAIL '+order+' '+(text||'no banner'));return;}setTimeout(check,40);return;}if(text.indexOf('Published')!==-1&&order==='sync,ready,ready,merge'&&!window.__mainPatched&&!localStorage.getItem('rm-editor-pending:ryanmoalemi/fullcourtbuckets:84:review/buckets.json')){document.documentElement.setAttribute('data-result','PASS');return;}if(tries>160){document.documentElement.setAttribute('data-result','FAIL retry '+order+' '+(text||'no banner'));return;}setTimeout(check,40);}setTimeout(check,20);"
 ));
 var draftDenyResult = chromeDumpBudget(draftDenyFile, 16000);
 if (draftDenyResult !== "PASS") throw new Error("draft permission failure was not explained: " + (draftDenyResult || "no result"));
@@ -576,7 +650,7 @@ console.log("draft permission test passed");
 var conflictFile = path.join(os.tmpdir(), "editor-conflict-publish-test.html");
 fs.writeFileSync(conflictFile, flowPage(
   "localStorage.clear();localStorage.setItem('rm-editor-token','github_pat_conflict');" + draftFetch("conflict"),
-  "var tries=0;var phase='fail';function check(){tries+=1;var button=document.getElementById('publish');var title=document.getElementById('review-title');if(!window.__clicked&&button&&title&&title.textContent.indexOf('Full court')!==-1){window.__clicked=true;button.click();var ok=document.getElementById('modal-ok');if(ok)ok.click();}var banner=document.querySelector('.banner:not(.permission)');var text=banner?banner.textContent:'';var retry=document.getElementById('retry-pending');var order=(window.__order||[]).join(',');var stored=localStorage.getItem('rm-editor-pending:ryanmoalemi/fullcourtbuckets:84:review/buckets.json');if(phase==='fail'){if(retry&&retry.textContent==='Retry'&&text.indexOf('Publishing did not finish')!==-1&&text.indexOf('main was not changed')!==-1&&text.indexOf('live page was not changed')!==-1&&text.indexOf('Resource not accessible')===-1&&order==='ready,start,workflow,label'&&stored){phase='retry';window.__failWorkflow=false;retry.click();tries=0;setTimeout(check,40);return;}if(tries>160){document.documentElement.setAttribute('data-result','FAIL '+order+' '+(text||'no banner'));return;}setTimeout(check,40);return;}if(text.indexOf('Published')!==-1&&order==='ready,start,workflow,label,start,workflow,label'&&!localStorage.getItem('rm-editor-pending:ryanmoalemi/fullcourtbuckets:84:review/buckets.json')){document.documentElement.setAttribute('data-result','PASS');return;}if(tries>160){document.documentElement.setAttribute('data-result','FAIL retry '+order+' '+(text||'no banner'));return;}setTimeout(check,40);}setTimeout(check,20);"
+  "var tries=0;var phase='fail';function check(){tries+=1;var button=document.getElementById('publish');var title=document.getElementById('review-title');if(!window.__clicked&&button&&title&&title.textContent.indexOf('Full court')!==-1){window.__clicked=true;button.click();var ok=document.getElementById('modal-ok');if(ok)ok.click();}var banner=document.querySelector('.banner:not(.permission)');var text=banner?banner.textContent:'';var retry=document.getElementById('retry-pending');var order=(window.__order||[]).join(',');var stored=localStorage.getItem('rm-editor-pending:ryanmoalemi/fullcourtbuckets:84:review/buckets.json');if(phase==='fail'){if(retry&&retry.textContent==='Retry'&&text.indexOf('Publishing did not finish')!==-1&&text.indexOf('Pull Request has merge conflicts')!==-1&&text.indexOf('live page was not changed')!==-1&&text.indexOf('Resource not accessible')===-1&&order===''&&stored&&!window.__mainPatched){phase='retry';window.__failSync=false;retry.click();tries=0;setTimeout(check,40);return;}if(tries>180){document.documentElement.setAttribute('data-result','FAIL '+order+' '+(text||'no banner'));return;}setTimeout(check,40);return;}if(text.indexOf('Published')!==-1&&order==='sync,ready,merge'&&!window.__mainPatched&&!localStorage.getItem('rm-editor-pending:ryanmoalemi/fullcourtbuckets:84:review/buckets.json')){document.documentElement.setAttribute('data-result','PASS');return;}if(tries>180){document.documentElement.setAttribute('data-result','FAIL retry '+order+' '+(text||'no banner'));return;}setTimeout(check,40);}setTimeout(check,20);"
 ));
 var conflictResult = chromeDumpBudget(conflictFile, 18000);
 if (conflictResult !== "PASS") throw new Error("conflict publish was not retried: " + (conflictResult || "no result"));
@@ -590,4 +664,24 @@ fs.writeFileSync(directFile, flowPage(
 var directResult = chromeDumpBudget(directFile, 14000);
 if (directResult !== "PASS") throw new Error("other repos did not keep the direct merge: " + (directResult || "no result"));
 console.log("direct merge test passed");
+
+var forbiddenFile = path.join(os.tmpdir(), "editor-forbidden-publish-test.html");
+fs.writeFileSync(forbiddenFile, flowPage(
+  "localStorage.clear();localStorage.setItem('rm-editor-token','github_pat_forbidden');" + draftFetch("forbidden"),
+  "var tries=0;function check(){tries+=1;var button=document.getElementById('publish');var title=document.getElementById('review-title');if(!window.__clicked&&button&&title&&title.textContent.indexOf('Full court')!==-1){window.__clicked=true;button.click();var ok=document.getElementById('modal-ok');if(ok)ok.click();}var banner=document.querySelector('.banner.publish-result')||document.querySelector('.banner');var text=banner?banner.textContent:'';var order=(window.__order||[]).join(',');var commit=window.__commit||'';if(text.indexOf('Published')!==-1&&order==='sync,ready,merge,main'&&window.__mainPatched&&commit.indexOf('mainsha')!==-1&&commit.indexOf('\"force\"')===-1&&text.indexOf('View post')!==-1){document.documentElement.setAttribute('data-result','PASS');return;}if(tries>180){document.documentElement.setAttribute('data-result','FAIL '+order+' main='+window.__mainPatched+' '+(text||'no banner'));return;}setTimeout(check,40);}setTimeout(check,20);"
+));
+var forbiddenResult = chromeDumpBudget(forbiddenFile, 18000);
+if (forbiddenResult !== "PASS") throw new Error("merge refusal did not publish to main: " + (forbiddenResult || "no result"));
+console.log("forbidden merge test passed");
+
+var previewArticle = "<!DOCTYPE html><html><head><title>Full court buckets</title><style>html,body{min-height:100vh;background:#050506;color:#fff;margin:0}.page{min-height:100vh}</style></head><body><article class=\"page\"><h1>Full court buckets</h1><p>Hello from the article.</p><p class=\"analysis-footer\">ANALYSIS. COMMENTARY.</p></article></body></html>";
+var previewFile = path.join(os.tmpdir(), "editor-preview-fit.html");
+fs.writeFileSync(previewFile, "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>preview fit</title><link rel=\"stylesheet\" href=\"file:///workspace/editor/editor.css\"><style>*{animation:none !important}</style></head><body><div id=\"app\"></div><script>" +
+  "localStorage.clear();localStorage.setItem('rm-editor-token','github_pat_preview');" + draftFetch("direct", "ryanmoalemi/ryanmoalemi.com", previewArticle) +
+  "</script><script src=\"file:///workspace/editor/lib.js\"></script><script src=\"file:///workspace/editor/roundtrip.js\"></script><script src=\"file:///workspace/editor/vendor/word.bundle.js\"></script><script src=\"file:///workspace/editor/editor.js\"></script><script>" +
+  "var tries=0;function check(){tries+=1;var frame=document.getElementById('preview');var doc=frame&&frame.contentDocument;var text=doc&&doc.body?doc.body.innerText:'';var plus=doc&&doc.querySelector('.rm-plus');var frameH=frame?frame.getBoundingClientRect().height:0;var last=0;if(doc&&doc.body){var nodes=doc.body.querySelectorAll('*');for(var i=0;i<nodes.length;i++){var rect=nodes[i].getBoundingClientRect();if(rect&&rect.height>1)last=Math.max(last,rect.bottom);}}var gap=frameH-last;if(text.indexOf('ANALYSIS. COMMENTARY.')!==-1&&plus&&gap<32&&gap>-2&&frameH>40&&frameH<520){document.documentElement.setAttribute('data-gap',String(Math.round(gap)));document.documentElement.setAttribute('data-frame',String(Math.round(frameH)));document.documentElement.setAttribute('data-result','PASS');return;}if(tries>80){document.documentElement.setAttribute('data-result','FAIL gap='+Math.round(gap)+' height='+Math.round(frameH)+' plus='+!!plus+' '+(text||'no text').slice(0,120));return;}setTimeout(check,50);}setTimeout(check,400);" +
+  "</script></body></html>");
+var previewResult = chromeDumpBudget(previewFile, 12000);
+if (!previewResult || previewResult.indexOf("PASS") !== 0) throw new Error("preview frame was taller than the article: " + (previewResult || "no result"));
+console.log("preview fit test passed", previewResult);
 
