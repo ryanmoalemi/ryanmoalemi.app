@@ -3,6 +3,13 @@
   "title": "A quieter morning reset",
   "meta_description": "A sample draft about a short morning reset, written so the article editor can be tested.",
   "summary": "This sample draft describes a short morning reset Ryan uses before opening a laptop. It is a test article for the private editor, not a published guide.",
+  "uniqueness": {
+    "summary": "The sequence comes from Ryan's own morning, not from a copied routine list. The illustration was drawn for this draft. A generic morning-habits page would not have either.",
+    "points": [
+      "A first-hand note from Ryan's own morning, not a generic routine list",
+      "A sample illustration drawn for this draft"
+    ]
+  },
   "url_path": "/drafts/morning-reset/",
   "files": ["drafts/morning-reset/index.html"],
   "hero_image": "drafts/morning-reset/hero.svg",
