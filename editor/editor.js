@@ -12,13 +12,19 @@
     draft: null,
     dirty: false,
     busy: "",
-    reviewHash: ""
+    reviewHash: "",
+    failure: null,
+    permissionLine: "",
+    permissionGaps: [],
+    activePending: null
   };
   var session = null;
   var inboxLoaded = false;
   var inboxGeneration = 0;
   var ignoreHash = false;
   var lock = false;
+  var retrying = false;
+  var publishGeneration = 0;
 
   var PREVIEW_CSS = [
     "#rm-mount, .ProseMirror { min-height: 8rem; }",
@@ -106,11 +112,27 @@
         var data = await res.json();
         if (data && data.message) message = data.message;
       } catch (parseErr) { /* keep status message */ }
+      message = lib.plainText(message) || ("GitHub API error " + res.status);
       var error = new Error(message);
       error.status = res.status;
+      error.url = url;
+      error.accepted = res.headers.get("x-accepted-github-permissions") || "";
       throw error;
     }
     return res;
+  }
+
+  async function apiStatus(method, path, body) {
+    try {
+      var res = await apiFetch(apiUrl(path), { method: method, body: body });
+      return { status: res.status, message: "", accepted: "" };
+    } catch (err) {
+      return {
+        status: err.status || 0,
+        message: err.message || "",
+        accepted: err.accepted || ""
+      };
+    }
   }
 
   async function apiJson(path, opts) {
@@ -147,6 +169,182 @@
   function clearStoredToken() {
     try { localStorage.removeItem(lib.TOKEN_KEY); }
     catch (err) { /* private mode */ }
+  }
+
+  function writePending(item) {
+    if (!item || !item.repo || item.number == null) return item;
+    var stored = lib.parsePending(item) || item;
+    var key = lib.pendingKey(stored.repo, stored.number, stored.jsonPath || "");
+    try { localStorage.setItem(key, JSON.stringify(stored)); }
+    catch (err) { /* the in-memory copy still covers this session */ }
+    state.activePending = stored;
+    return stored;
+  }
+
+  function readPendingItem(item) {
+    if (!item) return null;
+    try {
+      var key = lib.pendingKey(item.repo, item.number, item.jsonPath || "");
+      var parsed = lib.parsePending(localStorage.getItem(key));
+      if (parsed) return parsed;
+    } catch (err) { /* fall through */ }
+    return findPending(item.repo, item.number);
+  }
+
+  function findPending(repo, number) {
+    var items = listPending();
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].repo === repo && items[i].number === Number(number)) return items[i];
+    }
+    return null;
+  }
+
+  function listPending() {
+    var items = [];
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var key = localStorage.key(i);
+        if (!key || key.indexOf(lib.PENDING_PREFIX) !== 0) continue;
+        var parsed = lib.parsePending(localStorage.getItem(key));
+        if (parsed) items.push(parsed);
+      }
+    } catch (err) { /* private mode */ }
+    return items;
+  }
+
+  function clearPending(item) {
+    if (!item) return;
+    try { localStorage.removeItem(lib.pendingKey(item.repo, item.number, item.jsonPath || "")); }
+    catch (err) { /* private mode */ }
+    if (state.activePending && state.activePending.repo === item.repo && state.activePending.number === item.number) {
+      state.activePending = null;
+    }
+  }
+
+  function failureView(err, item, permissions) {
+    var access = !err || lib.isAccessError(err && err.status, err && err.message);
+    var perms = permissions && permissions.length ? permissions : (err ? lib.permissionsFromFailure(err.url, err.status, err.message, err.accepted) : []);
+    var labelLeft = item && item.steps && item.steps.comment === "done" && item.steps.label === "pending";
+    var readyLeft = item && item.action === "publish" && item.steps && item.steps.ready === "pending";
+    var publishLeft = item && item.action === "publish" && item.steps && item.steps.merge !== "done";
+    var text;
+    if (err && err.deployWait) {
+      text = "The pull request is merged, but the live page does not show the new title yet. The page that is up now stays as it is. Press Retry to check again.";
+      return { text: text, note: "", item: item || null, retry: true, link: false };
+    }
+    if (err && err.publishWorkflow) {
+      var reason = lib.plainText(err.message) || "The shared pages were not published.";
+      text = "Publishing did not finish. " + reason + " Your edits are still here, and the live page was not changed. Press Retry.";
+      return { text: text, note: "", item: item || null, retry: true, link: false };
+    }
+    if (labelLeft) {
+      var perm = (perms.length ? perms : [lib.PERMISSION_PULLS]).join(", ");
+      text = access
+        ? "The note is on the pull request. The changes-requested label was not added. The token is missing " + perm + " on " + lib.repoLabel(item.repo) + ". Open token settings, set Pull requests to Read and write, then press Retry."
+        : "The note is on the pull request. The changes-requested label was not added. " + (lib.plainText(err && err.message) || "Press Retry.");
+    } else if (readyLeft) {
+      var readyPerm = (perms.length ? perms : [lib.PERMISSION_PULLS]).join(", ");
+      text = access
+        ? "Publishing did not finish. This pull request is still a draft, so it was not merged and the live page was not changed. The token is missing " + readyPerm + " on " + lib.repoLabel(item.repo) + ". Marking a draft ready needs Pull requests set to Read and write. Open token settings, then press Retry."
+        : "Publishing did not finish. This pull request is still a draft, so it was not merged and the live page was not changed. " + (lib.plainText(err && err.message) || "GitHub did not mark it ready for review.") + " Press Retry.";
+    } else if (publishLeft) {
+      var publishPerm = (perms.length ? perms : [lib.PERMISSION_PULLS]).join(", ");
+      text = access
+        ? "Publishing did not finish. Your edits are still here, and the live page was not changed. The token is missing " + publishPerm + " on " + lib.repoLabel(item.repo) + ". Open token settings, set Pull requests to Read and write, then press Retry."
+        : "Publishing did not finish. Your edits are still here, and the live page was not changed. " + (lib.plainText(err && err.message) || "GitHub did not merge the pull request.") + " Press Retry.";
+    } else if (access) {
+      var committed = !!(item && item.steps && item.steps.commit === "done");
+      if (item && item.action === "publish" && item.steps && item.steps.merge === "pending" && item.steps.commit !== "pending") committed = true;
+      text = lib.writeFailureMessage({
+        permissions: perms,
+        repo: item && item.repo,
+        kept: item && item.note ? "note" : "edits",
+        committed: committed
+      });
+    } else {
+      var detail = lib.plainText(err && err.message) || "GitHub did not receive this.";
+      text = detail + (item && item.note ? " The note is saved in this browser. Press Retry." : " The edits are saved in this browser. Press Retry.");
+    }
+    return {
+      text: text,
+      note: item && item.note || "",
+      item: item || null,
+      retry: true,
+      link: !!access
+    };
+  }
+
+  function noteWriteFailure(err, item) {
+    var stored = readPendingItem(item) || item || state.activePending;
+    state.publishView = null;
+    state.failure = failureView(err, stored);
+    state.error = "";
+    state.notice = "";
+  }
+
+  function canReplayNow(item) {
+    if (!item || !item.steps) return false;
+    if (item.steps.commit === "pending" && (!item.files || !item.files.length || !item.branch)) {
+      return !!(session && state.draft && state.draft.repo === item.repo && Number(state.draft.number) === Number(item.number));
+    }
+    return true;
+  }
+
+  async function probeRepo(repo) {
+    var meta = await apiStatus("GET", "/repos/" + repo);
+    if (meta.status === 401) {
+      var rejected = new Error("GitHub rejected that token. Copy the full github_pat_ value and try again.");
+      rejected.status = 401;
+      throw rejected;
+    }
+    var visible = lib.probeAllows(meta, "repo");
+    if (visible == null) return { repo: repo, unknown: true };
+    if (!visible) {
+      return { repo: repo, contentsRead: false, contentsWrite: false, pullsRead: false, pullsWrite: false };
+    }
+    var contentsReadStatus = await apiStatus("GET", "/repos/" + repo + "/contents/");
+    var contentsRead = lib.probeAllows(contentsReadStatus, "read");
+    if (contentsRead == null) return { repo: repo, unknown: true };
+    var contentsWrite = false;
+    if (contentsRead) {
+      var writeStatus = await apiStatus("POST", "/repos/" + repo + "/git/commits", {
+        message: "permission check",
+        tree: "0000000000000000000000000000000000000000",
+        parents: []
+      });
+      contentsWrite = lib.probeAllows(writeStatus, "write");
+      if (contentsWrite == null) return { repo: repo, unknown: true };
+    }
+    var pullsReadStatus = await apiStatus("GET", "/repos/" + repo + "/pulls?per_page=1&state=all");
+    var pullsRead = lib.probeAllows(pullsReadStatus, "read");
+    if (pullsRead == null) return { repo: repo, unknown: true };
+    var pullsWriteStatus = await apiStatus("POST", "/repos/" + repo + "/pulls/0/reviews", {
+      body: "permission check",
+      event: "COMMENT"
+    });
+    var pullsWrite = lib.probeAllows(pullsWriteStatus, "write");
+    if (pullsWrite == null) return { repo: repo, unknown: true };
+    return {
+      repo: repo,
+      contentsRead: contentsRead,
+      contentsWrite: !!contentsWrite,
+      pullsRead: pullsRead,
+      pullsWrite: !!pullsWrite
+    };
+  }
+
+  async function refreshPermissionBanner() {
+    if (!lib.isFineGrainedToken(token)) {
+      state.permissionLine = "";
+      state.permissionGaps = [];
+      return;
+    }
+    var results = [];
+    for (var i = 0; i < lib.REPOS.length; i++) {
+      results.push(await probeRepo(lib.REPOS[i]));
+    }
+    state.permissionGaps = results;
+    state.permissionLine = lib.permissionBanner(results);
   }
 
   async function assertToken() {
@@ -287,15 +485,125 @@
     ]);
   }
 
+  function statusBanner(parent) {
+    var nodes = parent.querySelectorAll(".banner");
+    for (var i = 0; i < nodes.length; i++) {
+      if (!nodes[i].classList.contains("permission")) return nodes[i];
+    }
+    return null;
+  }
+
+  function insertBanner(parent, node) {
+    var permission = parent.querySelector(".banner.permission");
+    if (permission) {
+      if (permission.nextSibling) parent.insertBefore(node, permission.nextSibling);
+      else parent.appendChild(node);
+      return;
+    }
+    parent.insertBefore(node, parent.children[1] || null);
+  }
+
   function setBanner(parent, message, kind) {
-    var existing = parent.querySelector(".banner");
-    if (!message) {
+    var existing = statusBanner(parent);
+    var spec = typeof message === "string" ? { text: message } : (message || {});
+    if (spec.phase === "publishing" || spec.phase === "published") {
+      var publishNode = existing || el("div", { class: "banner" });
+      fillPublishBanner(publishNode, spec);
+      if (!existing) insertBanner(parent, publishNode);
+      return;
+    }
+    if (!spec.text) {
       if (existing) existing.remove();
       return;
     }
-    var node = existing || el("div", { class: "banner", role: kind === "ok" ? "status" : "alert" });
-    node.className = "banner" + (kind === "ok" ? " ok" : "");
-    node.textContent = message;
+    var node = existing || el("div", { class: "banner" });
+    node.className = "banner" + (kind === "ok" ? " ok" : (kind === "working" ? " working" : ""));
+    node.setAttribute("role", kind === "ok" || kind === "working" ? "status" : "alert");
+    clear(node);
+    node.append(el("p", { class: "banner-text" }, spec.text));
+    if (spec.note) {
+      node.append(el("p", { class: "banner-label" }, "Saved note"));
+      var note = el("p", { class: "saved-note" });
+      note.textContent = spec.note;
+      node.append(note);
+    }
+    if (spec.link || spec.retry) {
+      var row = el("div", { class: "banner-actions" });
+      if (spec.link) {
+        row.append(el("a", {
+          href: lib.TOKEN_SETTINGS_URL,
+          target: "_blank",
+          rel: "noopener noreferrer"
+        }, lib.TOKEN_SETTINGS_URL));
+      }
+      if (spec.retry) {
+        var retry = el("button", { class: "btn primary", type: "button", id: "retry-pending" }, "Retry");
+        retry.addEventListener("click", function () { retryPending(); });
+        row.append(retry);
+      }
+      node.append(row);
+    }
+    if (!existing) insertBanner(parent, node);
+  }
+
+  function fillPublishBanner(node, spec) {
+    clear(node);
+    if (spec.phase === "publishing") {
+      node.className = "banner working";
+      node.setAttribute("role", "status");
+      node.append(
+        el("p", { class: "banner-status" }, "Publishing..."),
+        el("p", { class: "banner-text" }, spec.note || "Publishing the page.")
+      );
+      return;
+    }
+    node.className = "banner ok publish-result";
+    node.setAttribute("role", "status");
+    node.append(el("p", { class: "banner-status" }, "Published"));
+    if (spec.time) node.append(el("p", { class: "banner-text" }, spec.time));
+    if (spec.url) {
+      node.append(el("p", { class: "banner-text" }, el("a", {
+        href: spec.url,
+        target: "_blank",
+        rel: "noopener noreferrer"
+      }, spec.url)));
+    }
+    var actions = el("div", { class: "banner-actions" });
+    if (spec.url) {
+      actions.append(el("a", {
+        class: "btn primary",
+        href: spec.url,
+        target: "_blank",
+        rel: "noopener noreferrer"
+      }, "View post"));
+    }
+    var back = el("button", { class: "btn ghost", type: "button" }, "Back to drafts");
+    back.addEventListener("click", goInbox);
+    actions.append(back);
+    node.append(actions);
+  }
+
+  function paintPermission(parent) {
+    var existing = parent.querySelector(".banner.permission");
+    if (!state.permissionLine) {
+      if (existing) existing.remove();
+      return;
+    }
+    var node = existing || el("div", { class: "banner permission", role: "status" });
+    node.className = "banner permission";
+    node.setAttribute("role", "status");
+    if (node.getAttribute("data-line") !== state.permissionLine) {
+      clear(node);
+      node.setAttribute("data-line", state.permissionLine);
+      var line = el("p", { class: "permission-line" });
+      line.append(document.createTextNode(state.permissionLine + " "));
+      line.append(el("a", {
+        href: lib.TOKEN_SETTINGS_URL,
+        target: "_blank",
+        rel: "noopener noreferrer"
+      }, lib.TOKEN_SETTINGS_URL));
+      node.append(line);
+    }
     if (!existing) parent.insertBefore(node, parent.children[1] || null);
   }
 
@@ -328,7 +636,9 @@
       createdAt: pr.created_at,
       htmlUrl: pr.html_url,
       labels: labels.map(function (label) { return label.name; }),
-      changesRequested: lib.hasLabel(labels, "changes-requested")
+      changesRequested: lib.hasLabel(labels, "changes-requested"),
+      isDraft: !!pr.draft,
+      nodeId: pr.node_id || ""
     };
     if (!paths.length) {
       return [Object.assign({}, base, {
@@ -391,7 +701,7 @@
         }
         return items;
       } catch (err) {
-        warnings.push(repo + ": " + err.message);
+        if (!lib.isAccessError(err.status, err.message)) warnings.push(lib.repoLabel(repo) + ": " + lib.plainText(err.message));
         return [];
       }
     }));
@@ -1317,16 +1627,36 @@
     bindSiteNav(doc);
     fitIframe(frame);
     window.setTimeout(function () { fitIframe(frame); }, 300);
+    paintStatus();
+    retryOpenDraft();
+  }
+
+  function retryOpenDraft() {
+    if (state.screen !== "review" || !state.draft) return;
+    if (retrying) {
+      window.setTimeout(retryOpenDraft, 300);
+      return;
+    }
+    if (!findPending(state.draft.repo, state.draft.number)) return;
+    retryPending();
+  }
+
+  function commentItems() {
+    if (!session || !session.editor || !window.RMWord) return [];
+    return window.RMWord.listComments(session.editor).map(function (item) {
+      return {
+        quote: String(item.quote || "").replace(/\s+/g, " ").trim(),
+        note: String(item.note || "").trim()
+      };
+    });
   }
 
   function commentLines() {
-    if (!session || !session.editor || !window.RMWord) return "";
-    var notes = window.RMWord.listComments(session.editor);
+    var notes = commentItems();
     if (!notes.length) return "";
     var lines = ["Comments:"];
     notes.forEach(function (item) {
-      var quote = item.quote.replace(/\s+/g, " ").trim();
-      lines.push('"' + quote + '": ' + item.note);
+      lines.push('"' + item.quote + '": ' + item.note);
     });
     return lines.join("\n");
   }
@@ -1703,8 +2033,20 @@
       if (!opts.holdLock) lock = false;
       return false;
     }
+    var pending = stageCommit(draft, opts.pending, {
+      title: title,
+      slug: slug,
+      description: description,
+      hero: session.heroPath || "",
+      body: fragment,
+      files: files,
+      liveUrl: lib.liveUrl(draft.meta.site || draft.site, nextUrl)
+    });
     try {
       var sha = await commitFiles(draft.headRepo, draft.branch, files);
+      pending.steps.commit = "done";
+      if (lib.pendingDone(pending)) clearPending(pending);
+      else writePending(pending);
       file.originalHtml = nextHtml;
       file.baseline = baselineFrom(nextHtml);
       file.remoteTitle = title;
@@ -1732,10 +2074,10 @@
       writeAutosave();
       var save = document.getElementById("save-edits");
       if (save) save.classList.remove("dirty");
+      state.failure = null;
       return true;
     } catch (err) {
-      state.error = err.message;
-      state.notice = "";
+      noteWriteFailure(err, pending);
       throw err;
     } finally {
       if (!opts.holdLock) {
@@ -1778,14 +2120,332 @@
     return commit.sha;
   }
 
+  function stageCommit(draft, seeded, fields) {
+    var existing = findPending(draft.repo, draft.number) || seeded || null;
+    var item = existing || {
+      action: "save",
+      repo: draft.repo,
+      headRepo: draft.headRepo || draft.repo,
+      number: draft.number,
+      jsonPath: draft.jsonPath || "",
+      branch: draft.branch || "",
+      note: "",
+      comments: [],
+      title: "",
+      slug: "",
+      description: "",
+      hero: "",
+      body: "",
+      files: [],
+      steps: { commit: "pending", comment: "skip", label: "skip", merge: "skip" },
+      savedAt: new Date().toISOString(),
+      liveUrl: ""
+    };
+    item.headRepo = draft.headRepo || item.headRepo;
+    item.branch = draft.branch || item.branch;
+    item.jsonPath = draft.jsonPath || item.jsonPath || "";
+    item.title = fields.title;
+    item.slug = fields.slug;
+    item.description = fields.description;
+    item.hero = fields.hero;
+    item.body = fields.body;
+    item.files = fields.files;
+    if (fields.liveUrl) item.liveUrl = fields.liveUrl;
+    if (!item.steps) item.steps = { commit: "pending", comment: "skip", label: "skip", merge: "skip" };
+    if (item.steps.commit !== "done") item.steps.commit = "pending";
+    return writePending(item);
+  }
+
+  function draftSnapshot(draft, action, steps, note) {
+    return writePending({
+      action: action,
+      repo: draft.repo,
+      headRepo: draft.headRepo || draft.repo,
+      number: draft.number,
+      jsonPath: draft.jsonPath || "",
+      branch: draft.branch || "",
+      nodeId: draft.nodeId || "",
+      note: note || "",
+      comments: commentItems(),
+      title: fieldText("field-title") || (draft.meta && draft.meta.title) || draft.title || "",
+      slug: fieldText("field-slug"),
+      description: fieldText("field-description"),
+      hero: session && session.heroPath || "",
+      body: currentFragment(),
+      files: [],
+      steps: steps,
+      savedAt: new Date().toISOString(),
+      liveUrl: lib.liveUrl(draft.meta && draft.meta.site || draft.site, draft.meta && draft.meta.url_path || "/")
+    });
+  }
+
+  function delay(ms) {
+    return new Promise(function (resolve) { window.setTimeout(resolve, ms); });
+  }
+
+  function showPublishProgress(note) {
+    state.publishView = { phase: "publishing", note: note };
+    state.busy = "Publishing...";
+    state.failure = null;
+    state.error = "";
+    state.notice = "";
+    paintStatus();
+  }
+
+  function showPublished(url, when) {
+    state.notice = "";
+    state.error = "";
+    state.failure = null;
+    state.publishView = {
+      phase: "published",
+      url: url,
+      time: lib.formatPacificTime(when || new Date())
+    };
+    paintStatus();
+  }
+
+  async function pollLive(url, title, generation) {
+    if (!lib.isLiveSiteUrl(url)) return { ok: false, status: 0 };
+    var wait = Number(window.RM_LIVE_POLL_MS) || 3000;
+    var limit = Number(window.RM_LIVE_POLL_LIMIT) || 120000;
+    var started = Date.now();
+    var last = 0;
+    var polls = 0;
+    var maxPolls = Math.max(1, Math.ceil(limit / wait));
+    while (polls < maxPolls && Date.now() - started <= limit) {
+      polls += 1;
+      if (generation !== publishGeneration) return { ok: false, cancelled: true };
+      try {
+        var probe = new URL(url);
+        probe.searchParams.set("rm-publish", String(Date.now()));
+        var res = await fetch(probe.toString(), { cache: "no-store", credentials: "omit" });
+        last = res.status;
+        var html = "";
+        try { html = await res.text(); } catch (readErr) { html = ""; }
+        if (lib.livePageReady(html, title, res.status)) return { ok: true, status: res.status };
+      } catch (err) {
+        last = 0;
+      }
+      if (Date.now() - started + wait > limit) break;
+      await delay(wait);
+    }
+    return { ok: false, status: last };
+  }
+
+  async function markPullRequestReady(nodeId) {
+    if (!nodeId) {
+      throw new Error("GitHub did not include an id for this pull request, so it could not be marked ready for review.");
+    }
+    var body = await apiJson("/graphql", {
+      method: "POST",
+      body: {
+        query: "mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ pullRequest { isDraft } } }",
+        variables: { id: nodeId }
+      }
+    });
+    var message = lib.graphqlMessage(body);
+    if (!message) return body;
+    if (/not a draft/i.test(message)) return body;
+    var err = new Error(message);
+    if (lib.graphqlAccessError(body)) {
+      err.status = 403;
+      err.url = "https://api.github.com/graphql";
+      err.accepted = "pull_requests=write";
+    }
+    throw err;
+  }
+
+  async function ensureReadyForReview(item) {
+    if (!item.steps || item.steps.ready !== "pending") return item;
+    showPublishProgress("Checking whether the pull request is a draft.");
+    var pr = await apiJson("/repos/" + item.repo + "/pulls/" + item.number);
+    item.nodeId = (pr && pr.node_id) || item.nodeId || "";
+    if (pr && pr.draft) {
+      showPublishProgress("Marking the pull request ready for review.");
+      await markPullRequestReady(item.nodeId);
+      item.steps.ready = "done";
+    } else {
+      item.steps.ready = "skip";
+    }
+    writePending(item);
+    return readPendingItem(item) || item;
+  }
+
+  async function mergePullRequest(item) {
+    var path = "/repos/" + item.repo + "/pulls/" + item.number + "/merge";
+    try {
+      await apiJson(path, { method: "PUT", body: { merge_method: "squash" } });
+      return item;
+    } catch (err) {
+      if (!lib.isDraftMergeError(err && err.message)) throw err;
+    }
+    showPublishProgress("Marking the pull request ready for review.");
+    if (!item.nodeId) {
+      var pr = await apiJson("/repos/" + item.repo + "/pulls/" + item.number);
+      item.nodeId = (pr && pr.node_id) || "";
+    }
+    item.steps.ready = "pending";
+    writePending(item);
+    await markPullRequestReady(item.nodeId);
+    item.steps.ready = "done";
+    writePending(item);
+    item = readPendingItem(item) || item;
+    showPublishProgress("Merging the pull request.");
+    await apiJson(path, { method: "PUT", body: { merge_method: "squash" } });
+    return item;
+  }
+
+  async function triggerPublishWorkflow(item) {
+    var nonce = lib.publishNonce();
+    item.workflowNonce = nonce;
+    item.workflowAt = new Date().toISOString();
+    writePending(item);
+    await apiJson("/repos/" + item.repo + "/issues/" + item.number + "/comments", {
+      method: "POST",
+      body: { body: "fcb-publish:start " + nonce }
+    });
+    var dispatched = false;
+    try {
+      await apiJson("/repos/" + item.repo + "/actions/workflows/publish-approved.yml/dispatches", {
+        method: "POST",
+        body: {
+          ref: "main",
+          inputs: { pr: String(item.number), branch: item.branch || "", nonce: nonce }
+        }
+      });
+      dispatched = true;
+    } catch (err) {
+      if (err.status !== 403 && err.status !== 404 && err.status !== 422) throw err;
+    }
+    if (!dispatched) {
+      try {
+        await apiJson("/repos/" + item.repo + "/issues/" + item.number + "/labels/" + encodeURIComponent("approved"), {
+          method: "DELETE"
+        });
+      } catch (err) {
+        if (err.status !== 404) throw err;
+      }
+      await addLabel(item.repo, item.number, "approved", {
+        color: "0E8A16",
+        description: "Ryan approved this draft from the article editor"
+      });
+    }
+    return readPendingItem(item) || item;
+  }
+
+  async function waitForPublishWorkflow(item, generation) {
+    var wait = Number(window.RM_WORKFLOW_POLL_MS) || 4000;
+    var limit = Number(window.RM_WORKFLOW_POLL_LIMIT) || 180000;
+    var started = Date.now();
+    var nonce = item.workflowNonce || "";
+    var polls = 0;
+    var maxPolls = Math.max(1, Math.ceil(limit / wait));
+    while (polls < maxPolls && Date.now() - started <= limit) {
+      polls += 1;
+      if (generation !== publishGeneration) return { ok: false, cancelled: true };
+      var comments = await apiJson("/repos/" + item.repo + "/issues/" + item.number + "/comments?per_page=100");
+      var result = lib.publishWorkflowResult(comments, nonce);
+      if (result.status === "failed") {
+        var failed = new Error(result.message || "The shared pages were not published.");
+        failed.publishWorkflow = true;
+        throw failed;
+      }
+      if (result.status === "published") return { ok: true };
+      var pr = await apiJson("/repos/" + item.repo + "/pulls/" + item.number);
+      if (pr && pr.merged) return { ok: true };
+      if (Date.now() - started + wait > limit) break;
+      await delay(wait);
+    }
+    var timeout = new Error("The publish workflow did not finish.");
+    timeout.publishWorkflow = true;
+    throw timeout;
+  }
+
+  async function advancePublish(item) {
+    var generation = publishGeneration;
+    item = readPendingItem(item) || item;
+    if (item.steps.commit === "pending") {
+      showPublishProgress("Saving your edits.");
+      if (session && state.draft && state.draft.repo === item.repo && Number(state.draft.number) === Number(item.number)) {
+        await saveEdits({ holdLock: true, quiet: true, pending: item });
+        if (state.failure || state.error) {
+          state.publishView = null;
+          if (state.error && !state.failure) noteWriteFailure(new Error(state.error), item);
+          return false;
+        }
+      } else if (item.files && item.files.length && item.branch) {
+        await commitFiles(item.headRepo || item.repo, item.branch, item.files);
+        item.steps.commit = "done";
+        writePending(item);
+      } else {
+        item.steps.commit = "skip";
+        writePending(item);
+      }
+      item = readPendingItem(item) || item;
+    }
+    if (generation !== publishGeneration) return false;
+    item = await ensureReadyForReview(item);
+    if (generation !== publishGeneration) return false;
+    if (item.steps.workflow === "pending" && lib.usesPublishWorkflow(item.repo)) {
+      showPublishProgress("Rebuilding the news hub, homepage, ticker, and sitemaps, then publishing.");
+      item = await triggerPublishWorkflow(item);
+      item.steps.workflow = "done";
+      writePending(item);
+      item = readPendingItem(item) || item;
+    }
+    if (generation !== publishGeneration) return false;
+    if (item.steps.merge === "pending" && lib.usesPublishWorkflow(item.repo) && item.steps.workflow !== "skip") {
+      showPublishProgress("Waiting for the news hub, homepage, ticker, and sitemaps to publish.");
+      var workflow;
+      try {
+        workflow = await waitForPublishWorkflow(item, generation);
+      } catch (err) {
+        item.steps.workflow = "pending";
+        writePending(item);
+        throw err;
+      }
+      if (!workflow || workflow.cancelled) return false;
+      item.steps.merge = "done";
+      writePending(item);
+      item = readPendingItem(item) || item;
+    } else if (item.steps.merge === "pending") {
+      showPublishProgress("Merging the pull request.");
+      item = await mergePullRequest(item);
+      item.steps.merge = "done";
+      writePending(item);
+      item = readPendingItem(item) || item;
+    }
+    if (generation !== publishGeneration) return false;
+    if (item.steps.deploy === "pending") {
+      showPublishProgress("Waiting for the live page to show the new title.");
+      var ready = await pollLive(item.liveUrl, item.title, generation);
+      if (ready.cancelled) return false;
+      if (!ready.ok) {
+        var deployErr = new Error("The live page does not show the new title yet.");
+        deployErr.deployWait = true;
+        noteWriteFailure(deployErr, item);
+        return false;
+      }
+      item.steps.deploy = "done";
+      if (lib.pendingDone(item)) clearPending(item);
+      else writePending(item);
+    }
+    state.dirty = false;
+    showPublished(item.liveUrl);
+    return true;
+  }
+
   async function publish() {
     if (state.busy || !state.draft) return;
     var draft = state.draft;
     var url = lib.liveUrl(draft.meta.site || draft.site, draft.meta.url_path || "/");
+    var workflowRepo = lib.usesPublishWorkflow(draft.repo);
     var ok = await openModal(function (card, close) {
       card.append(
         el("h2", {}, "Publish this draft?"),
-        el("p", {}, "This saves your edits, squash-merges the pull request, and publishes the page."),
+        el("p", {}, workflowRepo
+          ? "This saves your edits, marks a draft pull request ready for review, rebuilds the news hub, homepage, ticker, and sitemaps from the article, and publishes the page. The article stays as saved. If that fails, the live page stays as it is."
+          : "This saves your edits, marks a draft pull request ready for review, squash-merges it, and publishes the page."),
         el("p", {}, ["Live URL: ", el("span", { class: "live-url" }, url)]),
         el("div", { class: "modal-actions" }, [
           el("button", { class: "btn ghost", type: "button", id: "modal-cancel" }, "Cancel"),
@@ -1797,58 +2457,27 @@
       card.querySelector("#modal-cancel").focus();
     });
     if (!ok || lock) return;
-    var committed = false;
     lock = true;
-    state.busy = "Publishing…";
-    state.error = "";
-    paintStatus();
+    var generation = publishGeneration;
+    showPublishProgress(state.dirty ? "Saving your edits." : "Checking whether the pull request is a draft.");
+    var item = draftSnapshot(draft, "publish", {
+      commit: state.dirty ? "pending" : "skip",
+      comment: "skip",
+      label: "skip",
+      ready: "pending",
+      workflow: workflowRepo ? "pending" : "skip",
+      merge: "pending",
+      deploy: "pending"
+    }, "");
     try {
-      committed = await saveEdits({ holdLock: true, quiet: true });
-      if (state.error) {
-        state.busy = "";
-        paintStatus();
-        return;
-      }
-      state.busy = "Publishing…";
-      paintStatus();
-      await apiJson("/repos/" + draft.repo + "/pulls/" + draft.number + "/merge", {
-        method: "PUT",
-        body: { merge_method: "squash" }
-      });
-      state.dirty = false;
-      state.busy = "";
-      showPublished(url);
+      await advancePublish(item);
     } catch (err) {
-      state.busy = "";
-      state.error = (committed ? "Edits are saved on the branch. " : "") + "Publish did not finish. " + err.message;
-      paintStatus();
+      if (generation === publishGeneration && !state.failure) noteWriteFailure(err, readPendingItem(item) || item);
     } finally {
       lock = false;
       state.busy = "";
+      if (generation === publishGeneration) paintStatus();
     }
-  }
-
-  function showPublished(url) {
-    state.notice = "";
-    state.error = "";
-    var bar = document.querySelector(".action-bar");
-    if (bar) {
-      clear(bar);
-      bar.append(
-        el("a", { class: "btn primary", href: url, target: "_blank", rel: "noopener noreferrer" }, "Open live page"),
-        el("button", { class: "btn ghost", type: "button" }, "Back to drafts")
-      );
-      bar.querySelector("button").addEventListener("click", goInbox);
-    }
-    var host = document.querySelector(".review-screen") || app;
-    var oldBanner = host.querySelector(".banner");
-    if (oldBanner) oldBanner.remove();
-    var banner = el("div", { class: "banner ok", role: "status" });
-    banner.append(
-      document.createTextNode("Published. The live page may take a minute to update. "),
-      el("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, url)
-    );
-    host.insertBefore(banner, host.children[1] || null);
   }
 
   async function sendBack() {
@@ -1880,35 +2509,55 @@
       return;
     }
     if (lock) return;
-    var committed = false;
     lock = true;
     state.busy = "Sending…";
     state.error = "";
+    state.failure = null;
+    var item = draftSnapshot(state.draft, "send-back", {
+      commit: state.dirty ? "pending" : "skip",
+      comment: "pending",
+      label: "pending",
+      merge: "skip"
+    }, note);
     paintStatus();
     try {
-      if (state.dirty) {
-        committed = await saveEdits({ holdLock: true, quiet: true });
-        if (state.error) {
-          state.busy = "";
-          paintStatus();
+      if (item.steps.commit === "pending") {
+        await saveEdits({ holdLock: true, quiet: true, pending: item });
+        if (state.failure || state.error) {
+          if (state.error && !state.failure) {
+            state.failure = {
+              text: lib.plainText(state.error) + " The note is saved in this browser. Press Retry.",
+              note: item.note,
+              item: item,
+              retry: true,
+              link: false
+            };
+            state.error = "";
+          }
           return;
         }
+        item = readPendingItem(item) || item;
         state.busy = "Sending…";
         paintStatus();
       }
-      await postNote(state.draft.repo, state.draft.number, note);
+      await postNote(item.repo, item.number, item.note);
+      item = readPendingItem(item) || item;
       try {
-        await addLabel(state.draft.repo, state.draft.number, "changes-requested");
+        await addLabel(item.repo, item.number, "changes-requested");
       } catch (labelErr) {
-        throw new Error("The note was posted. The changes-requested label was not added. " + labelErr.message);
+        labelErr.message = "The note was posted. The changes-requested label was not added. " + lib.plainText(labelErr.message);
+        throw labelErr;
       }
+      item.steps.label = "done";
+      if (lib.pendingDone(item)) clearPending(item);
+      else writePending(item);
       state.draft.changesRequested = true;
       state.notice = "Sent back. The note is on the pull request.";
+      state.failure = null;
       state.error = "";
     } catch (err) {
-      var hint = err.status === 403 ? " The token needs Pull requests set to Read and write." : "";
-      state.error = (committed ? "Edits are saved on the branch. " : "") + err.message + hint;
-      state.notice = "";
+      item = readPendingItem(item) || item;
+      if (!state.failure) noteWriteFailure(err, item);
     } finally {
       lock = false;
       state.busy = "";
@@ -1916,22 +2565,234 @@
     }
   }
 
+  async function replayPending(item) {
+    var current = readPendingItem(item) || item;
+    if (current.steps.commit === "pending") {
+      if (current.files && current.files.length && current.branch) {
+        await commitFiles(current.headRepo || current.repo, current.branch, current.files);
+        current.steps.commit = "done";
+        writePending(current);
+      } else if (session && state.draft && state.draft.repo === current.repo && Number(state.draft.number) === Number(current.number)) {
+        state.error = "";
+        state.failure = null;
+        await saveEdits({ holdLock: true, quiet: true, pending: current });
+        current = readPendingItem(current) || current;
+        if (state.failure) throw new Error(state.failure.text);
+        if (state.error) {
+          noteWriteFailure(new Error(state.error), current);
+          throw new Error(state.error);
+        }
+        if (current.steps.commit === "pending") {
+          current.steps.commit = "skip";
+          writePending(current);
+        }
+      } else {
+        var wait = new Error("Open the draft and press Retry so the edits can be saved with the note.");
+        noteWriteFailure(wait, current);
+        throw wait;
+      }
+    }
+    current = readPendingItem(current) || current;
+    if (current.steps.comment === "pending") {
+      if (!current.note) {
+        current.steps.comment = "skip";
+        writePending(current);
+      } else {
+        await postNote(current.repo, current.number, current.note);
+        current = readPendingItem(current) || current;
+      }
+    }
+    if (current.steps.label === "pending") {
+      await addLabel(current.repo, current.number, "changes-requested");
+      current.steps.label = "done";
+      writePending(current);
+    }
+    if (current.steps.merge === "pending") {
+      await apiJson("/repos/" + current.repo + "/pulls/" + current.number + "/merge", {
+        method: "PUT",
+        body: { merge_method: "squash" }
+      });
+      current.steps.merge = "done";
+      writePending(current);
+    }
+    if (lib.pendingDone(current)) clearPending(current);
+    return current;
+  }
+
+  function successNotice(item) {
+    if (!item) return "Saved to GitHub.";
+    if (item.action === "send-back" || item.action === "comment") return "Sent back. The note is on the pull request.";
+    if (item.action === "publish") return "Published.";
+    return "Saved.";
+  }
+
+  async function retryItems(items) {
+    var failed = null;
+    var last = null;
+    for (var i = 0; i < items.length; i++) {
+      var item = readPendingItem(items[i]) || items[i];
+      if (!item) continue;
+      if (!canReplayNow(item)) {
+        failed = { err: new Error("Open the draft and press Retry so the edits can be saved with the note."), item: item };
+        continue;
+      }
+      var blocked = lib.blockedPermissions(item, state.permissionGaps || []);
+      if (blocked.length) {
+        failed = { err: null, item: item, permissions: blocked };
+        continue;
+      }
+      try {
+        if (item.action === "publish") {
+          var published = await advancePublish(item);
+          if (!published) {
+            failed = { err: null, item: readPendingItem(item) || item };
+            continue;
+          }
+          last = item;
+        } else {
+          last = await replayPending(item);
+        }
+      } catch (err) {
+        failed = { err: err, item: readPendingItem(item) || item };
+      }
+    }
+    return { failed: failed, last: last };
+  }
+
+  async function retryPending() {
+    if (state.busy || retrying) return;
+    retrying = true;
+    var items = listPending();
+    if (!items.length && state.failure && state.failure.item) items = [state.failure.item];
+    if (!items.length) {
+      retrying = false;
+      return;
+    }
+    var held = lock;
+    if (!held) lock = true;
+    state.busy = "Retrying…";
+    state.failure = null;
+    state.error = "";
+    state.notice = "";
+    paintStatus();
+    var outcome = { failed: null, last: null };
+    try {
+      await refreshPermissionBanner();
+      outcome = await retryItems(items);
+    } catch (err) {
+      if (err.status === 401) {
+        token = "";
+        clearStoredToken();
+        state.busy = "";
+        lock = false;
+        retrying = false;
+        renderSignin(lib.plainText(err.message));
+        return;
+      }
+      outcome.failed = outcome.failed || { err: err, item: items[0] };
+    }
+    state.busy = "";
+    if (!held) lock = false;
+    if (outcome.failed) {
+      var fail = outcome.failed;
+      if (fail.permissions) state.failure = failureView(null, fail.item, fail.permissions);
+      else if (!state.failure) noteWriteFailure(fail.err, fail.item);
+    } else {
+      state.failure = null;
+      state.notice = successNotice(outcome.last || items[0]);
+      if ((outcome.last || items[0]) && (outcome.last || items[0]).action === "publish") {
+        showPublished((outcome.last || items[0]).liveUrl);
+      }
+    }
+    retrying = false;
+    paintStatus();
+  }
+
+  async function retryAllPending() {
+    if (retrying) return;
+    retrying = true;
+    var items = listPending().filter(canReplayNow);
+    if (!items.length) {
+      var waiting = listPending();
+      if (waiting.length && waiting[0].note) {
+        state.failure = {
+          text: "A note is saved in this browser. Open the draft and press Retry.",
+          note: waiting[0].note,
+          item: waiting[0],
+          retry: true,
+          link: false
+        };
+      }
+      paintStatus();
+      retrying = false;
+      return;
+    }
+    var outcome = await retryItems(items);
+    if (outcome.failed) {
+      var fail = outcome.failed;
+      if (fail.permissions) state.failure = failureView(null, fail.item, fail.permissions);
+      else if (!state.failure) noteWriteFailure(fail.err, fail.item);
+    } else if (outcome.last) {
+      state.failure = null;
+      state.notice = successNotice(outcome.last);
+    }
+    retrying = false;
+    paintStatus();
+  }
+
   async function postNote(repo, number, note) {
+    var item = findPending(repo, number);
+    if (!item) {
+      item = writePending({
+        action: "comment",
+        repo: repo,
+        headRepo: repo,
+        number: number,
+        jsonPath: "",
+        branch: "",
+        note: note,
+        comments: [],
+        title: "",
+        slug: "",
+        description: "",
+        hero: "",
+        body: "",
+        files: [],
+        steps: { commit: "skip", comment: "pending", label: "skip", merge: "skip" },
+        savedAt: new Date().toISOString(),
+        liveUrl: ""
+      });
+    }
+    item.note = note || item.note;
+    if (item.steps.comment !== "done") item.steps.comment = "pending";
+    writePending(item);
     try {
       await apiJson("/repos/" + repo + "/issues/" + number + "/comments", {
         method: "POST",
-        body: { body: note }
+        body: { body: item.note }
       });
     } catch (err) {
-      if (err.status !== 403 && err.status !== 404) throw err;
-      await apiJson("/repos/" + repo + "/pulls/" + number + "/reviews", {
-        method: "POST",
-        body: { body: note, event: "COMMENT" }
-      });
+      if (err.status !== 403 && err.status !== 404) {
+        noteWriteFailure(err, item);
+        throw err;
+      }
+      try {
+        await apiJson("/repos/" + repo + "/pulls/" + number + "/reviews", {
+          method: "POST",
+          body: { body: item.note, event: "COMMENT" }
+        });
+      } catch (reviewErr) {
+        noteWriteFailure(reviewErr, item);
+        throw reviewErr;
+      }
     }
+    item.steps.comment = "done";
+    if (lib.pendingDone(item)) clearPending(item);
+    else writePending(item);
   }
 
-  async function addLabel(repo, number, name) {
+  async function addLabel(repo, number, name, options) {
+    options = options || {};
     try {
       await apiJson("/repos/" + repo + "/issues/" + number + "/labels", {
         method: "POST",
@@ -1944,8 +2805,8 @@
         method: "POST",
         body: {
           name: name,
-          color: "D93F0B",
-          description: "Ryan sent this draft back from the article editor"
+          color: options.color || "D93F0B",
+          description: options.description || "Ryan sent this draft back from the article editor"
         }
       });
       await apiJson("/repos/" + repo + "/issues/" + number + "/labels", {
@@ -1983,7 +2844,11 @@
   function paintStatus() {
     var host = document.querySelector(".review-screen") || document.querySelector(".shell");
     if (!host) return;
-    if (state.error) setBanner(host, state.error, "err");
+    paintPermission(host);
+    if (state.publishView && (state.publishView.phase === "publishing" || state.publishView.phase === "published")) {
+      setBanner(host, state.publishView, state.publishView.phase === "published" ? "ok" : "working");
+    } else if (state.failure && state.failure.text) setBanner(host, state.failure, "err");
+    else if (state.error) setBanner(host, lib.plainText(state.error), "err");
     else if (state.notice) setBanner(host, state.busy || state.notice, "ok");
     else if (state.busy) setBanner(host, state.busy, "ok");
     else setBanner(host, "", "ok");
@@ -1995,6 +2860,12 @@
     [save, publish, send, previewBtn, revisionsBtn].forEach(function (button) {
       if (button) button.disabled = !!state.busy;
     });
+    if (publish) {
+      var publishing = state.publishView && state.publishView.phase === "publishing";
+      var published = state.publishView && state.publishView.phase === "published";
+      publish.textContent = publishing ? "Publishing..." : "Approve & publish";
+      if (publishing || published) publish.disabled = true;
+    }
   }
 
   function goInbox() {
@@ -2003,6 +2874,8 @@
     state.dirty = false;
     state.error = "";
     state.notice = "";
+    state.publishView = null;
+    publishGeneration += 1;
     location.hash = "#/";
   }
 
@@ -2016,6 +2889,8 @@
     inboxLoaded = false;
     inboxGeneration += 1;
     clearStoredToken();
+    state.publishView = null;
+    publishGeneration += 1;
     revokeSession();
     location.hash = "#/";
     renderSignin("");
@@ -2069,21 +2944,23 @@
       setBanner(shell, "Checking the token…", "ok");
       try {
         await assertToken();
+        await refreshPermissionBanner();
       } catch (err) {
         token = "";
-        setBanner(shell, err.message, "err");
+        setBanner(shell, lib.plainText(err.message), "err");
         return;
       }
       writeStoredToken(next);
       try {
         show();
+        await retryAllPending();
       } catch (err) {
         token = "";
         state.loading = false;
         inboxLoaded = false;
         inboxGeneration += 1;
         clearStoredToken();
-        renderSignin(err.message);
+        renderSignin(lib.plainText(err.message));
       }
     });
     var repos = el("ul");
@@ -2121,7 +2998,19 @@
       el("p", { class: "fine" }, "The token stays in localStorage on this device. Requests go only to api.github.com."),
       help
     ]);
-    if (message) shell.insertBefore(el("div", { class: "banner", role: "alert" }, message), shell.children[1]);
+    if (message) shell.insertBefore(el("div", { class: "banner", role: "alert" }, lib.plainText(message)), shell.children[1]);
+    var savedNotes = listPending().map(function (item) { return item.note; }).filter(Boolean);
+    if (savedNotes.length) {
+      var saved = el("div", { class: "banner", role: "status" });
+      var savedText = el("p", { class: "banner-text" }, "A note is saved in this browser. Sign in and it will be sent.");
+      var savedLabel = el("p", { class: "banner-label" }, "Saved note");
+      var savedBody = el("p", { class: "saved-note" });
+      savedBody.textContent = savedNotes.join("\n\n");
+      saved.append(savedText, savedLabel, savedBody);
+      var firstBanner = shell.querySelector(".banner");
+      if (firstBanner && firstBanner.nextSibling) shell.insertBefore(saved, firstBanner.nextSibling);
+      else shell.insertBefore(saved, shell.children[1] || null);
+    }
     app.append(shell);
     var signOutBtn = shell.querySelector(".text-btn");
     if (signOutBtn) signOutBtn.remove();
@@ -2191,7 +3080,7 @@
       })));
     }
     app.append(shell);
-    if (state.error) setBanner(shell, state.error, "err");
+    paintStatus();
     shell.querySelector("#refresh").addEventListener("click", function () {
       refreshInbox().catch(function (err) {
         state.loading = false;
@@ -2289,11 +3178,15 @@
     back.addEventListener("click", goInbox);
     head.insertBefore(back, head.children[1]);
     var bar = el("div", { class: "action-bar" }, [
-      el("button", { class: "btn ghost", type: "button", id: "save-edits" }, "Save draft"),
-      el("button", { class: "btn ghost", type: "button", id: "preview-live", "aria-pressed": "false" }, "Preview"),
-      el("button", { class: "btn ghost", type: "button", id: "revisions" }, "Revisions"),
-      el("button", { class: "btn ghost", type: "button", id: "send-back" }, "Send back with notes"),
-      el("button", { class: "btn primary", type: "button", id: "publish" }, "Approve & publish")
+      el("div", { class: "publish-slot" }, [
+        el("button", { class: "btn primary", type: "button", id: "publish" }, "Approve & publish")
+      ]),
+      el("div", { class: "action-row" }, [
+        el("button", { class: "btn ghost", type: "button", id: "save-edits" }, "Save draft"),
+        el("button", { class: "btn ghost", type: "button", id: "preview-live", "aria-pressed": "false" }, "Preview"),
+        el("button", { class: "btn ghost", type: "button", id: "revisions" }, "Revisions"),
+        el("button", { class: "btn ghost", type: "button", id: "send-back" }, "Send back with notes")
+      ])
     ]);
     var frame = el("iframe", {
       class: "preview",
@@ -2303,16 +3196,12 @@
       title: "Article preview"
     });
     var screen = el("main", { class: "review-screen" }, [
-      head,
-      bar,
+      el("div", { class: "review-sticky" }, [head, bar]),
       el("p", { class: "muted" }, "Loading the article…")
     ]);
     app.append(screen);
     bar.querySelector("#save-edits").addEventListener("click", function () {
-      saveEdits().catch(function (err) {
-        state.error = err.message;
-        paintStatus();
-      });
+      saveEdits().catch(function () { paintStatus(); });
     });
     bar.querySelector("#preview-live").addEventListener("click", function () {
       setPreviewMode(!document.body.classList.contains("live-preview"));
@@ -2500,10 +3389,7 @@
   window.addEventListener("keydown", function (event) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && state.screen === "review") {
       event.preventDefault();
-      saveEdits().catch(function (err) {
-        state.error = err.message;
-        paintStatus();
-      });
+      saveEdits().catch(function () { paintStatus(); });
     }
   });
 
@@ -2524,14 +3410,20 @@
     show();
     try {
       await assertToken();
+      await refreshPermissionBanner();
+      await retryAllPending();
     } catch (err) {
-      token = "";
-      state.loading = false;
-      state.drafts = [];
-      inboxLoaded = false;
-      inboxGeneration += 1;
-      clearStoredToken();
-      renderSignin(err.message);
+      if (err.status === 401 || /rejected/i.test(err.message || "")) {
+        token = "";
+        state.loading = false;
+        state.drafts = [];
+        inboxLoaded = false;
+        inboxGeneration += 1;
+        clearStoredToken();
+        renderSignin(lib.plainText(err.message));
+        return;
+      }
+      paintStatus();
     }
   }
 

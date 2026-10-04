@@ -790,6 +790,304 @@ function autosaveKey(repo, pr, path) {
   return "rm-editor-draft:" + String(repo || "") + ":" + String(pr || "") + ":" + String(path || "");
 }
 
+var PENDING_PREFIX = "rm-editor-pending:";
+var PERMISSION_CONTENTS = "Contents: Read and write";
+var PERMISSION_PULLS = "Pull requests: Read and write";
+var TOKEN_SETTINGS_URL = "https://github.com/settings/personal-access-tokens";
+
+function isFineGrainedToken(value) {
+  return cleanToken(value).indexOf("github_pat_") === 0;
+}
+
+function repoLabel(full) {
+  var parts = String(full || "").split("/");
+  return parts[parts.length - 1] || String(full || "");
+}
+
+function pendingKey(repo, number, jsonPath) {
+  return PENDING_PREFIX + String(repo || "") + ":" + String(number || "") + ":" + String(jsonPath || "");
+}
+
+function plainText(value) {
+  var text = String(value == null ? "" : value);
+  if (/<!doctype|<html\b|<body\b|<head\b/i.test(text)) return "GitHub sent a page instead of an answer.";
+  return text
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isAccessError(status, message) {
+  var text = String(message || "").toLowerCase();
+  if (text.indexOf("rate limit") !== -1) return false;
+  if (Number(status) === 403) return true;
+  return text.indexOf("not accessible") !== -1 || text.indexOf("personal access token") !== -1;
+}
+
+function probeAllows(result, kind) {
+  var code = Number(result && result.status) || 0;
+  var text = String(result && result.message || "").toLowerCase();
+  if (!code) return null;
+  if (text.indexOf("rate limit") !== -1) return null;
+  if (code === 401) return false;
+  if (code === 403) return false;
+  if (kind === "repo" && code === 404) return false;
+  return true;
+}
+
+function missingPermissionNames(probe) {
+  if (!probe || probe.unknown) return [];
+  var missing = [];
+  if (probe.contentsRead === false || probe.contentsWrite === false) missing.push(PERMISSION_CONTENTS);
+  if (probe.pullsRead === false || probe.pullsWrite === false) missing.push(PERMISSION_PULLS);
+  return missing;
+}
+
+function permissionBanner(entries) {
+  var groups = [];
+  (entries || []).forEach(function (entry) {
+    var missing = entry && entry.missing ? entry.missing : missingPermissionNames(entry);
+    if (!missing.length) return;
+    var key = missing.join("|");
+    var group = null;
+    for (var i = 0; i < groups.length; i++) {
+      if (groups[i].key === key) group = groups[i];
+    }
+    if (!group) {
+      group = { key: key, missing: missing.slice(), repos: [] };
+      groups.push(group);
+    }
+    group.repos.push(repoLabel(entry.repo));
+  });
+  if (!groups.length) return "";
+  return groups.map(function (group) {
+    return "Missing " + group.missing.join(", ") + " on " + group.repos.join(", ");
+  }).join(". ") + ".";
+}
+
+function permissionsFromFailure(url, status, message, accepted) {
+  if (!isAccessError(status, message) && !String(accepted || "")) return [];
+  var header = String(accepted || "").toLowerCase();
+  var names = [];
+  if (header.indexOf("contents") !== -1) names.push(PERMISSION_CONTENTS);
+  if (header.indexOf("pull_request") !== -1 || header.indexOf("pull-request") !== -1) names.push(PERMISSION_PULLS);
+  if (names.length) return names;
+  var path = String(url || "").toLowerCase();
+  if (/\/graphql/.test(path) || /\/pulls\/|\/issues\/|\/merges|\/labels/.test(path)) return [PERMISSION_PULLS];
+  if (/\/git\/|\/contents\//.test(path)) return [PERMISSION_CONTENTS];
+  if (isAccessError(status, message)) return [PERMISSION_CONTENTS, PERMISSION_PULLS];
+  return [];
+}
+
+function writeFailureMessage(opts) {
+  opts = opts || {};
+  var perms = opts.permissions && opts.permissions.length ? opts.permissions : [PERMISSION_CONTENTS, PERMISSION_PULLS];
+  var repo = repoLabel(opts.repo);
+  var kept;
+  if (opts.committed && opts.kept === "note") {
+    kept = "The edits are saved on the branch. The note is still in this browser. GitHub did not receive the note.";
+  } else if (opts.kept === "note") {
+    kept = "The note is saved in this browser. GitHub did not receive it.";
+  } else if (opts.committed) {
+    kept = "The edits are saved on the branch. GitHub did not finish publishing.";
+  } else {
+    kept = "The edits are saved in this browser. GitHub did not receive them.";
+  }
+  var names = perms.map(function (item) {
+    return String(item).replace(": Read and write", "");
+  });
+  var fix = names.length > 1 ? "set " + names.join(" and ") + " to Read and write" : "set " + names[0] + " to Read and write";
+  return kept + " The token is missing " + perms.join(", ") + " on " + repo + ". Open token settings, " + fix + ", then press Retry.";
+}
+
+var PUBLISH_WORKFLOW_REPOS = ["ryanmoalemi/fullcourtbuckets"];
+
+function usesPublishWorkflow(repo) {
+  return PUBLISH_WORKFLOW_REPOS.indexOf(String(repo || "")) !== -1;
+}
+
+function publishNonce() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+function publishWorkflowResult(comments, nonce) {
+  var token = String(nonce || "");
+  if (!token) return { status: "pending", message: "" };
+  var latest = null;
+  (comments || []).forEach(function (comment) {
+    var body = String(comment && comment.body || "");
+    var first = body.split(/\r?\n/)[0];
+    var parts = first.split(/\s+/);
+    var created = Date.parse(comment && comment.created_at || "") || 0;
+    var failed = parts[0] === "fcb-publish:failed" && parts.indexOf(token) !== -1;
+    var published = parts[0] === "fcb-publish:published" && parts.indexOf(token) !== -1;
+    if (!failed && !published) return;
+    if (!latest || created >= latest.created) latest = { created: created, body: body, failed: failed };
+  });
+  if (!latest) return { status: "pending", message: "" };
+  if (latest.failed) {
+    var message = latest.body.split(/\r?\n/).slice(1).join(" ").replace(/\s+/g, " ").trim();
+    return { status: "failed", message: message };
+  }
+  return { status: "published", message: "" };
+}
+
+function pendingNeeds(item) {
+  var steps = item && item.steps || {};
+  var needs = [];
+  if (steps.commit === "pending") needs.push(PERMISSION_CONTENTS);
+  if (steps.comment === "pending" || steps.label === "pending" || steps.ready === "pending" || steps.workflow === "pending" || steps.merge === "pending") needs.push(PERMISSION_PULLS);
+  return needs;
+}
+
+function blockedPermissions(item, gaps) {
+  var needs = pendingNeeds(item);
+  if (!needs.length) return [];
+  var repo = String(item && item.repo || "");
+  var head = String(item && item.headRepo || "");
+  var missing = [];
+  (gaps || []).forEach(function (entry) {
+    if (!entry) return;
+    if (entry.repo !== repo && entry.repo !== head && repoLabel(entry.repo) !== repoLabel(repo)) return;
+    var have = entry.missing || missingPermissionNames(entry);
+    have.forEach(function (name) {
+      if (needs.indexOf(name) !== -1 && missing.indexOf(name) === -1) missing.push(name);
+    });
+  });
+  return missing;
+}
+
+function parsePending(raw) {
+  try {
+    var data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!data || typeof data !== "object") return null;
+    if (!data.repo || data.number == null || data.number === "") return null;
+    var action = data.action || "save";
+    if (action !== "save" && action !== "send-back" && action !== "publish" && action !== "comment") return null;
+    var steps = data.steps || {};
+    function step(name, fallback) {
+      var value = steps[name] || fallback;
+      if (value !== "pending" && value !== "done" && value !== "skip") return fallback;
+      return value;
+    }
+    return {
+      action: action,
+      repo: String(data.repo),
+      headRepo: String(data.headRepo || data.repo),
+      number: Number(data.number),
+      jsonPath: String(data.jsonPath || ""),
+      branch: String(data.branch || ""),
+      nodeId: String(data.nodeId || ""),
+      note: String(data.note || ""),
+      comments: Array.isArray(data.comments) ? data.comments : [],
+      title: String(data.title || ""),
+      slug: String(data.slug || ""),
+      description: String(data.description || ""),
+      hero: String(data.hero || ""),
+      body: String(data.body || ""),
+      files: Array.isArray(data.files) ? data.files : [],
+      steps: {
+        commit: step("commit", "skip"),
+        comment: step("comment", "skip"),
+        label: step("label", "skip"),
+        ready: step("ready", "skip"),
+        workflow: step("workflow", "skip"),
+        merge: step("merge", "skip"),
+        deploy: step("deploy", "skip")
+      },
+      savedAt: String(data.savedAt || ""),
+      liveUrl: String(data.liveUrl || ""),
+      workflowNonce: String(data.workflowNonce || "")
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+function isDraftMergeError(message) {
+  return /still a draft/i.test(String(message || ""));
+}
+
+function graphqlProblems(body) {
+  var errors = body && body.errors;
+  if (!Array.isArray(errors)) return [];
+  return errors.map(function (err) {
+    return {
+      type: String(err && err.type || ""),
+      message: plainText(err && err.message || "")
+    };
+  }).filter(function (err) { return err.message || err.type; });
+}
+
+function graphqlAccessError(body) {
+  return graphqlProblems(body).some(function (err) {
+    return err.type.toUpperCase() === "FORBIDDEN" || isAccessError(0, err.message);
+  });
+}
+
+function graphqlMessage(body) {
+  return graphqlProblems(body).map(function (err) { return err.message; }).filter(Boolean).join(" ");
+}
+
+function isLiveSiteUrl(url) {
+  try {
+    var parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    if (parsed.username || parsed.password) return false;
+    if (parsed.hostname === "api.github.com" || parsed.hostname === "github.com") return false;
+    return !!parsed.hostname;
+  } catch (err) {
+    return false;
+  }
+}
+
+function livePageReady(html, title, status) {
+  if (Number(status) !== 200) return false;
+  var page = String(html || "");
+  var want = String(title || "").replace(/\s+/g, " ").trim();
+  if (!want) return true;
+  if (page.indexOf(want) !== -1) return true;
+  var escaped = escapeHtmlText(want);
+  return !!escaped && escaped !== want && page.indexOf(escaped) !== -1;
+}
+
+function formatPacificTime(date) {
+  var when = date instanceof Date ? date : new Date(date);
+  if (!Number.isFinite(when.getTime())) return "";
+  var parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  }).formatToParts(when);
+  var hour = "";
+  var minute = "";
+  var period = "";
+  parts.forEach(function (part) {
+    if (part.type === "hour") hour = part.value;
+    if (part.type === "minute") minute = part.value;
+    if (part.type === "dayPeriod") period = String(part.value || "").toUpperCase();
+  });
+  if (!hour || !minute) return "";
+  return hour + ":" + minute + (period ? " " + period : "") + " PT";
+}
+
+function pendingDone(item) {
+  if (!item || !item.steps) return false;
+  var names = ["commit", "comment", "label", "ready", "workflow", "merge", "deploy"];
+  for (var i = 0; i < names.length; i++) {
+    var value = item.steps[names[i]];
+    if (value !== "done" && value !== "skip") return false;
+  }
+  return true;
+}
+
 function heroPresent(doc, hero) {
     if (!hero) return true;
     var target = String(hero).trim();
@@ -858,7 +1156,34 @@ function heroPresent(doc, hero) {
     applyArticle: applyArticle,
     diffWords: diffWords,
     formatSendBackNote: formatSendBackNote,
-    autosaveKey: autosaveKey
+    autosaveKey: autosaveKey,
+    PENDING_PREFIX: PENDING_PREFIX,
+    PERMISSION_CONTENTS: PERMISSION_CONTENTS,
+    PERMISSION_PULLS: PERMISSION_PULLS,
+    TOKEN_SETTINGS_URL: TOKEN_SETTINGS_URL,
+    isFineGrainedToken: isFineGrainedToken,
+    repoLabel: repoLabel,
+    pendingKey: pendingKey,
+    plainText: plainText,
+    isAccessError: isAccessError,
+    probeAllows: probeAllows,
+    missingPermissionNames: missingPermissionNames,
+    permissionBanner: permissionBanner,
+    permissionsFromFailure: permissionsFromFailure,
+    writeFailureMessage: writeFailureMessage,
+    pendingNeeds: pendingNeeds,
+    blockedPermissions: blockedPermissions,
+    parsePending: parsePending,
+    pendingDone: pendingDone,
+    usesPublishWorkflow: usesPublishWorkflow,
+    publishNonce: publishNonce,
+    publishWorkflowResult: publishWorkflowResult,
+    isDraftMergeError: isDraftMergeError,
+    graphqlAccessError: graphqlAccessError,
+    graphqlMessage: graphqlMessage,
+    isLiveSiteUrl: isLiveSiteUrl,
+    livePageReady: livePageReady,
+    formatPacificTime: formatPacificTime
   };
 
   root.RMLib = api;
