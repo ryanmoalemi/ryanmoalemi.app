@@ -21,21 +21,19 @@
     "The ten-minute length is Ryan's personal guess, not a measured study"
   ],
   "scorecard": {
-    "overall": 7,
-    "max": 10,
-    "stars": 3.5,
+    "total": 36,
+    "max": 50,
     "grade": "Needs work",
     "categories": [
       { "name": "Accuracy", "score": 8, "max": 10, "reason": "The steps match the note, but the timing is a guess." },
-      { "name": "Information gain", "score": 6, "max": 10, "reason": "The sequence is personal, and the page says it is a sample." },
-      { "name": "Effort and replication cost", "score": 5, "max": 10, "reason": "A short note is easy for someone else to imitate." },
-      { "name": "Originality", "score": 6, "max": 10, "reason": "The order is Ryan's, and the topic is common." },
-      { "name": "Experience and expertise", "score": 7, "max": 10, "reason": "It comes from doing the reset, not from a study." },
-      { "name": "Main content and layout", "score": 7, "max": 10, "reason": "The heading, list, and photo are easy to scan." },
-      { "name": "Transparency", "score": 8, "max": 10, "reason": "The page says the timing is unchecked." },
-      { "name": "Writing craft", "score": 7, "max": 10, "reason": "The sentences are plain and specific." },
-      { "name": "People-first purpose", "score": 7, "max": 10, "reason": "A reader can try the sequence the same morning." },
-      { "name": "Human voice", "score": 7, "max": 10, "reason": "It reads like a personal note." }
+      { "name": "Information gain", "score": 4, "max": 5, "reason": "The sequence is personal, and the page says it is a sample." },
+      { "name": "Effort and replication cost", "score": 3, "max": 5, "reason": "A short note is easy for someone else to imitate." },
+      { "name": "Originality", "score": 3, "max": 5, "reason": "The order is Ryan's, and the topic is common." },
+      { "name": "Experience and expertise", "score": 4, "max": 5, "reason": "It comes from doing the reset, not from a study." },
+      { "name": "Main content and layout", "score": 4, "max": 5, "reason": "The heading, list, and photo are easy to scan." },
+      { "name": "Transparency", "score": 4, "max": 5, "reason": "The page says the timing is unchecked." },
+      { "name": "Writing craft", "score": 3, "max": 5, "reason": "The sentences are plain and specific." },
+      { "name": "People-first purpose", "score": 3, "max": 5, "reason": "A reader can try the sequence the same morning." }
     ],
     "info_gain": "A first-hand sequence from Ryan's morning, labeled as a sample draft.",
     "ai_flags": [
