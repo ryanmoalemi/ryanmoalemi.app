@@ -116,6 +116,14 @@ Each category shows `N/10` and its one-line reason. The numbers are whole. The s
 
 The review screen is one page. GitHub Pages hosts it, and the GitHub API is the only place drafts and edits are stored. On a wide window the dashboard sits beside the editable article. On a phone the dashboard stacks above the article.
 
+The article opens as a word processor, like a document, using the site's own CSS. Ryan does not see HTML unless he opens Advanced. He can click in the article and type. The toolbar has Bold, Italic, Underline, Heading 2, Heading 3, bullets, numbered lists, link, undo, redo, and clear formatting. Bold, italic, underline, and undo also work with Ctrl or Cmd plus B, I, U, and Z. New links open in a new tab unless he turns that off.
+
+A side panel has plain text boxes labeled Title, Search description, and Image description for each photo. Title updates the page heading. Search description is the meta description. Image description is the photo's alt text.
+
+Show my edits highlights insertions and deletions against the original draft. Select text and choose Add note to leave a comment. Those notes are included when he sends the draft back.
+
+Edits are saved in this browser every few seconds. The page says Saved. Reloading restores them. Save edits, Approve & publish, and Send back still commit to the pull request branch when the text, title, or search description changed.
+
 The dashboard shows `Overall N/10` and the stars, then two boxes side by side: "Information gain: what makes this unique and hard to copy" (`unique` bullets and the `info_gain` line) and "Human voice" (`scorecard.ai_flags`). If `unique` is empty, the information-gain box shows a red "Nothing unique yet" warning. Under those boxes it shows `summary`, two or three plain sentences, then each category as `N/10` with its reason.
 
 The inbox shows the same `Overall N/10`, stars, and grade, plus the first sentence of `uniqueness.summary` under the title when that field is present.
@@ -127,10 +135,11 @@ Write a full HTML document.
 - Link the site's CSS with root-relative or relative `link rel="stylesheet"` tags. The files must exist on the pull request branch. The editor loads that CSS through `api.github.com` and applies it in the preview, so the draft looks like the live page.
 - Put the hero image in the document. `hero_image` is the repo path (or absolute URL) the editor uses to show the photo.
 - Put the readable copy in headings, paragraphs, list items, quotes, table cells, and figcaptions inside `article` or `main`.
-- Do not put the only copy of a sentence inside a layout `div`. Layout elements are not editable.
+- The article body is editable, including the layout wrappers around the copy. Copy that lives only outside that body is not editable.
 - Do not depend on scripts for the reading view. Scripts stay in the file when Ryan saves, but the preview does not run them and they are not editable.
-- Keep the visible title in an `h1`. Ryan's edit updates that heading, the document `<title>` (a site suffix after the old title is kept), `og:title` when present, and `title` in the review JSON.
-- Keep `<meta name="description">` in the document. Ryan's edit updates that tag, `og:description` when present, and `meta_description` in the review JSON.
+- Keep the visible title in an `h1`. Ryan's Title field updates that heading, the document `<title>` (a site suffix after the old title is kept), `og:title` when present, and `title` in the review JSON.
+- Keep `<meta name="description">` in the document. Ryan's Search description field updates that tag, `og:description` when present, and `meta_description` in the review JSON.
+- Keep figures, captions, tables, links, classes, and JSON-LD. The editor writes the article body back with the same tags and classes. Anything outside the article body is left as it was.
 
 ## What the editor writes
 
@@ -147,8 +156,8 @@ Actions:
 
 | Button | Effect |
 | --- | --- |
-| Save edits | One commit on the pull request branch. The message is exactly `Ryan edits`. The commit updates the article HTML and, when the title or meta description changed, the review JSON. |
-| Approve & publish | Asks for confirmation, saves edits, squash-merges the pull request, then shows the live URL (`https://` + `site` + `url_path`). |
-| Send back | Saves unsent edits, posts Ryan's note as a pull request comment, and adds the label `changes-requested`. |
+| Save edits | One commit on the pull request branch. The message is exactly `Ryan edits`. The commit updates the article HTML and, when the title or meta description changed, the review JSON. Before the commit, the editor checks that photos, photo credits, tables, links, and the hidden search summary are still present unless Ryan deleted them. If that check fails, nothing is committed. |
+| Approve & publish | Asks for confirmation, saves edits, squash-merges the pull request, then shows the live URL (`https://` + `site` + `url_path`). The same check runs before the save. A failed check does not merge. |
+| Send back | Saves unsent edits, posts Ryan's note and any comments as a pull request comment, and adds the label `changes-requested`. |
 
 The live URL can take a minute to update after a merge while GitHub Pages builds.

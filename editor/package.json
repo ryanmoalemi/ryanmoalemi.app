@@ -1,0 +1,13 @@
+{
+  "name": "article-editor",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/word.js --bundle --format=iife --global-name=RMWord --outfile=vendor/word.bundle.js --platform=browser --minify"
+  },
+  "devDependencies": {
+    "@tiptap/core": "2.26.1",
+    "@tiptap/extension-history": "2.26.1",
+    "@tiptap/pm": "2.26.1",
+    "esbuild": "0.25.10"
+  }
+}

@@ -21,13 +21,16 @@
   var lock = false;
 
   var PREVIEW_CSS = [
-    "[data-rm-edit]:hover { outline: 1px dashed rgba(124, 245, 200, 0.75); outline-offset: 4px; }",
-    "[data-rm-edit]:focus { outline: 2px solid #7cf5c8; outline-offset: 4px; }",
-    "[data-rm-meta] { display: block; margin: 0 0 1.1rem; padding: 0.75rem 0.85rem; border: 1px dashed rgba(124, 245, 200, 0.65); border-radius: 12px; background: rgba(7, 8, 12, 0.78); color: #f4f6fb; font: 500 0.98rem/1.45 'DM Sans', system-ui, sans-serif; }",
-    "[data-rm-meta]:focus { outline: 2px solid #7cf5c8; }",
-    "[data-rm-meta]::before { content: 'Meta description'; display: block; margin-bottom: 0.25rem; font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; color: #7cf5c8; }",
+    "#rm-mount, .ProseMirror { min-height: 8rem; }",
+    ".ProseMirror { outline: none; }",
+    ".ProseMirror:focus { outline: none; }",
+    ".rm-ins { background: rgba(70, 180, 90, 0.28); border-radius: 2px; }",
+    ".rm-del { background: rgba(210, 50, 50, 0.2); text-decoration: line-through; border-radius: 2px; }",
+    ".rm-comment { background: rgba(244, 183, 64, 0.45); border-radius: 2px; }",
+    "#rm-diff .rm-ins { box-decoration-break: clone; }",
     "[data-rm-hero] { margin: 0 0 1rem; }",
-    "[data-rm-hero] img { width: 100%; height: auto; display: block; }"
+    "[data-rm-hero] img { width: 100%; height: auto; display: block; }",
+    "[data-rm-raw] { user-select: none; }"
   ].join("\n");
 
   function el(tag, attrs, kids) {
@@ -399,6 +402,10 @@
 
   function revokeSession() {
     if (!session) return;
+    if (session.autosaveTimer) window.clearTimeout(session.autosaveTimer);
+    if (session.editor) {
+      try { session.editor.destroy(); } catch (err) { /* already gone */ }
+    }
     (session.blobs || []).forEach(function (url) {
       try { URL.revokeObjectURL(url); } catch (err) { /* already gone */ }
     });
@@ -516,10 +523,94 @@
     });
   }
 
-  async function composePreview(sess, filePath, html) {
+  function baselineFrom(html) {
     var doc = new DOMParser().parseFromString(html, "text/html");
-    lib.markEditable(doc);
-    var preview = new DOMParser().parseFromString(lib.serializeDocument(doc), "text/html");
+    var h1 = doc.querySelector("h1");
+    var meta = doc.querySelector('meta[name="description"]');
+    return {
+      h1: h1 ? h1.textContent.replace(/\s+/g, " ").trim() : "",
+      description: meta ? String(meta.getAttribute("content") || "").replace(/\s+/g, " ").trim() : ""
+    };
+  }
+
+  function autosaveKey() {
+    if (!state.draft || !session) return "";
+    return "rm-editor-local:" + state.draft.repo + ":" + state.draft.number + ":" + (state.draft.jsonPath || "") + ":" + (session.activePath || "");
+  }
+
+  function readAutosave() {
+    var key = autosaveKey();
+    if (!key) return null;
+    try {
+      var raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function writeAutosave() {
+    if (!session || !session.editor || !window.RMWord) return;
+    var key = autosaveKey();
+    if (!key) return;
+    var titleInput = document.getElementById("field-title");
+    var descInput = document.getElementById("field-description");
+    try {
+      localStorage.setItem(key, JSON.stringify({
+        savedAt: new Date().toISOString(),
+        sha: state.draft.sha,
+        title: titleInput ? titleInput.value : "",
+        description: descInput ? descInput.value : "",
+        doc: session.editor.getJSON()
+      }));
+      setSaveState("Saved");
+    } catch (err) {
+      setSaveState("Could not save in this browser");
+    }
+  }
+
+  function scheduleAutosave() {
+    setSaveState("Saving…");
+    window.clearTimeout(session && session.autosaveTimer);
+    if (!session) return;
+    session.autosaveTimer = window.setTimeout(writeAutosave, 3000);
+  }
+
+  function setSaveState(text) {
+    var node = document.getElementById("save-state");
+    if (node) node.textContent = text;
+  }
+
+  function fieldText(id) {
+    var node = document.getElementById(id);
+    return node ? node.value.replace(/\s+/g, " ").trim() : "";
+  }
+
+  async function preparePreview(sess, filePath, html) {
+    var sourceDoc = new DOMParser().parseFromString(html, "text/html");
+    var address = window.RMRoundtrip.rootAddress(sourceDoc);
+    var inner = window.RMRoundtrip.extractInner(html, address.tag, address.index);
+    var json = window.RMRoundtrip.parseFragment(inner);
+    var preserves = window.RMRoundtrip.preservesFragment(inner, window.RMRoundtrip.serializeDoc(json));
+    var srcMap = {};
+    var frag = new DOMParser().parseFromString("<!DOCTYPE html><html><body>" + inner + "</body></html>", "text/html");
+    var owned = Array.prototype.slice.call(frag.querySelectorAll("img"));
+    for (var n = 0; n < owned.length; n++) {
+      var ownedSrc = owned[n].getAttribute("src") || "";
+      if (!ownedSrc || srcMap[ownedSrc]) continue;
+      if (lib.isExternalUrl(ownedSrc)) {
+        srcMap[ownedSrc] = ownedSrc;
+        continue;
+      }
+      var ownedPath = lib.resolveRepoPath(filePath, ownedSrc);
+      if (!ownedPath) continue;
+      try { srcMap[ownedSrc] = await blobFor(sess, ownedPath); }
+      catch (err) {
+        sess.warnings.push("Could not load " + ownedPath);
+        srcMap[ownedSrc] = ownedSrc;
+      }
+    }
+    var preview = new DOMParser().parseFromString(html, "text/html");
     stripActive(preview);
     var cssChunks = [];
     var links = Array.prototype.slice.call(preview.querySelectorAll("link"));
@@ -542,11 +633,30 @@
         sess.warnings.push("Could not load " + cssPath);
       }
     }
+    var root = window.RMRoundtrip.editableRoot(preview);
+    if (preserves.ok) {
+      root.innerHTML = '<div id="rm-mount"></div>';
+      var hero = sess.draft.meta && sess.draft.meta.hero_image;
+      if (hero && !lib.heroPresent(sourceDoc, hero)) {
+        try {
+          var figure = preview.createElement("figure");
+          figure.setAttribute("data-rm-hero", "1");
+          var heroImg = preview.createElement("img");
+          heroImg.alt = "";
+          heroImg.src = await heroSrc(sess, filePath, hero);
+          figure.appendChild(heroImg);
+          root.insertBefore(figure, root.firstChild);
+        } catch (err) {
+          sess.warnings.push("Could not load the hero image");
+        }
+      }
+    }
     var images = Array.prototype.slice.call(preview.querySelectorAll("img[src], source[src], video[poster]"));
     for (var j = 0; j < images.length; j++) {
       var attr = images[j].hasAttribute("poster") && images[j].tagName === "VIDEO" ? "poster" : "src";
       var src = images[j].getAttribute(attr) || "";
       if (!src || lib.isExternalUrl(src)) continue;
+      if (src.indexOf("blob:") === 0) continue;
       var assetPath = lib.resolveRepoPath(filePath, src);
       if (!assetPath) continue;
       try { images[j].setAttribute(attr, await blobFor(sess, assetPath)); }
@@ -556,120 +666,17 @@
     for (var s = 0; s < srcsets.length; s++) {
       srcsets[s].setAttribute("srcset", await rewriteSrcset(sess, srcsets[s].getAttribute("srcset"), filePath));
     }
-    var root = lib.articleRoot(preview);
-    var hero = sess.draft.meta && sess.draft.meta.hero_image;
-    if (hero && !lib.heroPresent(doc, hero)) {
-      try {
-        var figure = preview.createElement("figure");
-        figure.setAttribute("data-rm-hero", "1");
-        var img = preview.createElement("img");
-        img.alt = "";
-        img.src = await heroSrc(sess, filePath, hero);
-        figure.appendChild(img);
-        root.insertBefore(figure, root.firstChild);
-      } catch (err) {
-        sess.warnings.push("Could not load the hero image");
-      }
-    }
-    var meta = preview.createElement("div");
-    meta.setAttribute("data-rm-meta", "1");
-    meta.setAttribute("contenteditable", "true");
-    meta.setAttribute("role", "textbox");
-    meta.setAttribute("aria-label", "Meta description");
-    meta.setAttribute("spellcheck", "true");
-    meta.textContent = (sess.draft.meta && sess.draft.meta.meta_description) || "";
-    root.insertBefore(meta, root.firstChild);
-    preview.querySelectorAll("[data-rm-edit]").forEach(function (node) {
-      node.setAttribute("contenteditable", "true");
-      node.setAttribute("spellcheck", "true");
-    });
     var style = preview.createElement("style");
     style.setAttribute("data-rm-preview", "1");
     style.textContent = cssChunks.join("\n") + "\n" + PREVIEW_CSS;
-    preview.head.appendChild(style);
-    return lib.serializeDocument(preview);
-  }
-
-  function baselineFrom(html) {
-    var doc = new DOMParser().parseFromString(html, "text/html");
-    var h1 = lib.articleRoot(doc).querySelector("h1");
-    var meta = doc.querySelector('meta[name="description"]');
+    (preview.head || preview.documentElement).appendChild(style);
     return {
-      h1: h1 ? h1.textContent.replace(/\s+/g, " ").trim() : "",
-      description: meta ? String(meta.getAttribute("content") || "").replace(/\s+/g, " ").trim() : ""
+      srcdoc: lib.serializeDocument(preview),
+      json: json,
+      inner: inner,
+      srcMap: srcMap,
+      preserves: preserves
     };
-  }
-
-  function takeSnap(doc) {
-    var html = {};
-    doc.querySelectorAll("[data-rm-edit]").forEach(function (node) {
-      html[node.getAttribute("data-rm-edit")] = node.innerHTML;
-    });
-    var meta = doc.querySelector("[data-rm-meta]");
-    var h1 = doc.querySelector("h1[data-rm-edit]");
-    return {
-      html: html,
-      description: meta ? meta.textContent.replace(/\s+/g, " ").trim() : "",
-      h1: h1 ? h1.textContent.replace(/\s+/g, " ").trim() : ""
-    };
-  }
-
-  function insertBreak(doc) {
-    var sel = doc.getSelection();
-    if (!sel || !sel.rangeCount) return;
-    var range = sel.getRangeAt(0);
-    range.deleteContents();
-    var br = doc.createElement("br");
-    range.insertNode(br);
-    range.setStartAfter(br);
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }
-
-  function bindPreview(iframe) {
-    var doc = iframe.contentDocument;
-    if (!doc) return;
-    session.snap = takeSnap(doc);
-    var mark = function () {
-      state.dirty = true;
-      var save = document.getElementById("save-edits");
-      if (save) save.classList.add("dirty");
-      var titleNode = document.getElementById("review-title");
-      var h1 = doc.querySelector("h1[data-rm-edit]");
-      if (titleNode && h1) titleNode.textContent = h1.textContent.replace(/\s+/g, " ").trim() || "Untitled draft";
-      fitIframe(iframe);
-    };
-    doc.querySelectorAll("[data-rm-edit], [data-rm-meta]").forEach(function (node) {
-      node.addEventListener("input", mark);
-      node.addEventListener("paste", function (event) {
-        event.preventDefault();
-        var text = (event.clipboardData && event.clipboardData.getData("text/plain")) || "";
-        var sel = doc.getSelection();
-        if (!sel || !sel.rangeCount) return;
-        var range = sel.getRangeAt(0);
-        range.deleteContents();
-        range.insertNode(doc.createTextNode(text));
-        range.collapse(false);
-        mark();
-      });
-      node.addEventListener("keydown", function (event) {
-        if (event.key === "Enter" && !event.shiftKey && node.tagName !== "PRE") {
-          event.preventDefault();
-          insertBreak(doc);
-          mark();
-        }
-      });
-    });
-    doc.addEventListener("click", function (event) {
-      var anchor = event.target && event.target.closest && event.target.closest("a");
-      if (anchor) event.preventDefault();
-    });
-    Array.prototype.forEach.call(doc.images || [], function (img) {
-      img.addEventListener("load", function () { fitIframe(iframe); });
-    });
-    fitIframe(iframe);
-    window.setTimeout(function () { fitIframe(iframe); }, 250);
   }
 
   function fitIframe(iframe) {
@@ -682,22 +689,426 @@
     iframe.style.height = Math.max(520, height + 24) + "px";
   }
 
-  function currentEdits() {
-    var iframe = document.getElementById("preview");
-    var doc = iframe && iframe.contentDocument;
-    if (!doc || !session || !session.snap) return null;
-    var edits = {};
-    doc.querySelectorAll("[data-rm-edit]").forEach(function (node) {
-      var id = node.getAttribute("data-rm-edit");
-      if (node.innerHTML !== session.snap.html[id]) edits[id] = node.innerHTML;
+  function refreshTools() {
+    if (!session || !session.editor || !window.RMWord) return;
+    var bits = window.RMWord.activeState(session.editor);
+    document.querySelectorAll(".toolbar [data-tool]").forEach(function (button) {
+      var name = button.getAttribute("data-tool");
+      var on = false;
+      if (name === "bold") on = bits.bold;
+      else if (name === "italic") on = bits.italic;
+      else if (name === "underline") on = bits.underline;
+      else if (name === "h2") on = bits.h2;
+      else if (name === "h3") on = bits.h3;
+      else if (name === "bullet") on = bits.bullet;
+      else if (name === "ordered") on = bits.ordered;
+      else if (name === "link") on = bits.link;
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+      button.classList.toggle("on", on);
     });
-    var meta = doc.querySelector("[data-rm-meta]");
-    var h1 = doc.querySelector("h1[data-rm-edit]");
-    return {
-      edits: edits,
-      description: meta ? meta.textContent.replace(/\s+/g, " ").trim() : session.snap.description,
-      h1: h1 ? h1.textContent.replace(/\s+/g, " ").trim() : session.snap.h1
-    };
+  }
+
+  function refreshAlts() {
+    if (!session || !session.editor || session.altLock || !window.RMWord) return;
+    var host = document.getElementById("alt-fields");
+    if (!host) return;
+    var images = window.RMWord.listImages(session.editor);
+    var key = images.map(function (img) { return img.src; }).join("|");
+    if (host.getAttribute("data-key") === key) {
+      var inputs = host.querySelectorAll("input");
+      images.forEach(function (img, index) {
+        if (inputs[index] && document.activeElement !== inputs[index] && inputs[index].value !== img.alt) {
+          inputs[index].value = img.alt;
+        }
+      });
+      return;
+    }
+    host.setAttribute("data-key", key);
+    clear(host);
+    if (!images.length) return;
+    host.append(el("h2", { class: "field-heading" }, "Image descriptions"));
+    images.forEach(function (img, index) {
+      var hint = img.caption || img.alt || ("Image " + (index + 1));
+      if (hint.length > 90) hint = hint.slice(0, 87) + "...";
+      var input = el("input", { type: "text", "aria-label": "Image description " + (index + 1) });
+      input.value = img.alt;
+      input.addEventListener("input", function () {
+        session.altLock = true;
+        try { window.RMWord.setImageAlt(session.editor, index, input.value); }
+        finally { session.altLock = false; }
+        state.dirty = true;
+        scheduleAutosave();
+      });
+      var thumb = session.srcMap && (session.srcMap[img.src] || img.src);
+      host.append(el("label", { class: "field alt-field" }, [
+        el("span", { class: "field-label" }, "Image description"),
+        el("span", { class: "field-hint" }, hint),
+        thumb ? el("img", { class: "alt-thumb", alt: "", src: thumb }) : null,
+        input
+      ]));
+    });
+  }
+
+  function refreshComments() {
+    var host = document.getElementById("comment-list");
+    if (!host || !session || !session.editor || !window.RMWord) return;
+    var notes = window.RMWord.listComments(session.editor);
+    clear(host);
+    if (!notes.length) return;
+    host.append(el("h2", { class: "field-heading" }, "Notes on the draft"));
+    notes.forEach(function (item) {
+      var quote = item.quote.replace(/\s+/g, " ").trim();
+      if (quote.length > 140) quote = quote.slice(0, 137) + "...";
+      var remove = el("button", { type: "button", class: "text-btn" }, "Remove");
+      remove.addEventListener("click", function () {
+        window.RMWord.removeComment(session.editor, item.id);
+        state.dirty = true;
+        scheduleAutosave();
+        refreshComments();
+      });
+      host.append(el("div", { class: "comment-card" }, [
+        el("p", { class: "comment-quote" }, '"' + quote + '"'),
+        el("p", {}, item.note),
+        remove
+      ]));
+    });
+  }
+
+  function onEditorUpdate() {
+    if (!session || !session.editor) return;
+    if (!session.titleLock && !session.altLock) state.dirty = true;
+    var titleInput = document.getElementById("field-title");
+    if (titleInput && !session.titleLock && document.activeElement !== titleInput) {
+      var h1 = window.RMWord.getH1Text(session.editor);
+      if (h1 != null) titleInput.value = h1;
+      var titleNode = document.getElementById("review-title");
+      if (titleNode && h1) titleNode.textContent = h1.replace(/\s+/g, " ").trim() || "Untitled draft";
+    }
+    refreshAlts();
+    refreshComments();
+    refreshTools();
+    scheduleAutosave();
+    if (session.showEdits) paintDiff();
+    var frame = document.getElementById("preview");
+    if (frame) fitIframe(frame);
+  }
+
+  function paintDiff() {
+    var frame = document.getElementById("preview");
+    var doc = frame && frame.contentDocument;
+    if (!doc || !session || !session.editor) return;
+    var view = doc.getElementById("rm-diff");
+    var editorDom = session.editor.view.dom;
+    if (!session.showEdits) {
+      if (view) view.hidden = true;
+      editorDom.hidden = false;
+      return;
+    }
+    var current = window.RMRoundtrip.serializeDoc(session.editor.getJSON());
+    var html = window.RMRoundtrip.diffHtml(session.originalInner, current);
+    var holder = doc.createElement("div");
+    holder.innerHTML = html;
+    Array.prototype.forEach.call(holder.querySelectorAll("img"), function (img) {
+      var src = img.getAttribute("src") || "";
+      if (session.srcMap && session.srcMap[src]) img.setAttribute("src", session.srcMap[src]);
+    });
+    if (!view) {
+      view = doc.createElement("div");
+      view.id = "rm-diff";
+      editorDom.parentNode.insertBefore(view, editorDom);
+    }
+    view.innerHTML = holder.innerHTML;
+    view.hidden = false;
+    editorDom.hidden = true;
+  }
+
+  function mountEditor(frame, prepared) {
+    var doc = frame.contentDocument;
+    var file = session.files[session.activePath];
+    session.originalInner = prepared.inner;
+    session.srcMap = prepared.srcMap;
+    session.preserves = prepared.preserves;
+    file.signature = window.RMRoundtrip.fragmentSignature(prepared.inner);
+    file.baseline = baselineFrom(session.files[session.activePath].originalHtml);
+    file.remoteTitle = file.baseline.h1;
+    file.remoteDescription = file.baseline.description;
+    if (!prepared.preserves.ok || !window.RMWord) {
+      state.error = "This draft could not be opened for editing because a photo, table, or link would be lost. Nothing was changed on GitHub.";
+      paintStatus();
+      fitIframe(frame);
+      return;
+    }
+    var mount = doc && doc.getElementById("rm-mount");
+    if (!mount) {
+      state.error = "The editor could not be opened.";
+      paintStatus();
+      return;
+    }
+    if (session.editor) {
+      try { session.editor.destroy(); } catch (err) { /* already gone */ }
+      session.editor = null;
+    }
+    var docJson = prepared.json;
+    var saved = readAutosave();
+    var restored = false;
+    if (saved && saved.doc) {
+      try {
+        var remoteHtml = window.RMRoundtrip.serializeDoc(prepared.json);
+        var savedHtml = window.RMRoundtrip.serializeDoc(saved.doc);
+        if (savedHtml !== remoteHtml || (saved.title || "") !== file.remoteTitle || (saved.description || "") !== file.remoteDescription) {
+          docJson = saved.doc;
+          restored = true;
+        }
+      } catch (err) {
+        restored = false;
+      }
+    }
+    function openWord(doc) {
+      return window.RMWord.createWordEditor({
+        element: mount,
+        doc: doc,
+        resolveSrc: function (src) { return (session.srcMap && session.srcMap[src]) || src; },
+        onUpdate: onEditorUpdate,
+        onSelection: refreshTools
+      });
+    }
+    try {
+      session.editor = openWord(docJson);
+    } catch (err) {
+      if (session.editor) {
+        try { session.editor.destroy(); } catch (ignore) { /* replace the failed view */ }
+        session.editor = null;
+      }
+      if (!restored) {
+        state.error = "This draft could not be opened for editing. Nothing was changed on GitHub.";
+        paintStatus();
+        return;
+      }
+      restored = false;
+      try {
+        session.editor = openWord(prepared.json);
+      } catch (again) {
+        state.error = "This draft could not be opened for editing. Nothing was changed on GitHub.";
+        paintStatus();
+        return;
+      }
+    }
+    var titleInput = document.getElementById("field-title");
+    var descInput = document.getElementById("field-description");
+    var h1 = window.RMWord.getH1Text(session.editor);
+    if (h1 == null) h1 = file.remoteTitle;
+    if (titleInput) titleInput.value = restored && saved && saved.title != null ? saved.title : h1;
+    if (descInput) {
+      descInput.value = restored && saved && saved.description != null ? saved.description : file.remoteDescription;
+    }
+    if (restored) {
+      state.dirty = true;
+      state.notice = "Restored edits saved in this browser.";
+      paintStatus();
+    }
+    refreshAlts();
+    refreshComments();
+    refreshTools();
+    setSaveState("Saved");
+    doc.addEventListener("click", function (event) {
+      var anchor = event.target && event.target.closest && event.target.closest("a");
+      if (anchor) event.preventDefault();
+    });
+    Array.prototype.forEach.call(doc.images || [], function (img) {
+      img.addEventListener("load", function () { fitIframe(frame); });
+    });
+    fitIframe(frame);
+    window.setTimeout(function () { fitIframe(frame); }, 300);
+  }
+
+  function commentLines() {
+    if (!session || !session.editor || !window.RMWord) return "";
+    var notes = window.RMWord.listComments(session.editor);
+    if (!notes.length) return "";
+    var lines = ["Comments:"];
+    notes.forEach(function (item) {
+      var quote = item.quote.replace(/\s+/g, " ").trim();
+      lines.push('"' + quote + '": ' + item.note);
+    });
+    return lines.join("\n");
+  }
+
+  async function openLinkDialog() {
+    if (!session || !session.editor) return;
+    var word = window.RMWord;
+    var range = word.selectionRange(session.editor);
+    var current = word.activeState(session.editor).linkAttrs || null;
+    if ((!current || !current.href) && range.from === range.to) {
+      state.error = "Select the words you want to link.";
+      paintStatus();
+      return;
+    }
+    state.error = "";
+    paintStatus();
+    var result = await openModal(function (card, close) {
+      var url = el("input", { id: "link-url", type: "url", "aria-label": "Link address" });
+      url.value = current && current.href ? current.href : "https://";
+      var box = el("input", { id: "link-new", type: "checkbox" });
+      box.checked = !current || !current.href || current.target === "_blank";
+      var remove = el("button", { class: "btn ghost", type: "button", id: "link-remove" }, "Remove link");
+      card.append(
+        el("h2", {}, current && current.href ? "Edit link" : "Add link"),
+        el("label", { class: "field-label", for: "link-url" }, "Link address"),
+        url,
+        el("label", { class: "check-label" }, [box, " Open in a new tab"]),
+        el("div", { class: "modal-actions" }, [
+          current && current.href ? remove : null,
+          el("button", { class: "btn ghost", type: "button", id: "modal-cancel" }, "Cancel"),
+          el("button", { class: "btn primary", type: "button", id: "modal-ok" }, "Save link")
+        ])
+      );
+      card.querySelector("#modal-cancel").addEventListener("click", function () { close(null); });
+      card.querySelector("#modal-ok").addEventListener("click", function () {
+        close({ href: url.value.trim(), blank: box.checked });
+      });
+      if (current && current.href) remove.addEventListener("click", function () { close({ remove: true }); });
+      url.focus();
+    });
+    if (!result || !session.editor) return;
+    if (result.remove) {
+      word.removeLink(session.editor, range);
+      return;
+    }
+    if (!result.href || result.href === "https://") {
+      state.error = "Enter a link address.";
+      paintStatus();
+      return;
+    }
+    var attrs = Object.assign({}, current || {});
+    attrs.href = result.href;
+    if (result.blank) {
+      attrs.target = "_blank";
+      if (!attrs.rel) attrs.rel = "noopener noreferrer";
+      else if (attrs.rel.indexOf("noopener") === -1) attrs.rel = (attrs.rel + " noopener").trim();
+    } else {
+      delete attrs.target;
+    }
+    word.applyLink(session.editor, attrs, range);
+    state.error = "";
+    state.dirty = true;
+    scheduleAutosave();
+  }
+
+  async function openCommentDialog() {
+    if (!session || !session.editor) return;
+    var word = window.RMWord;
+    var range = word.selectionRange(session.editor);
+    if (range.from === range.to) {
+      state.error = "Select the words you want to comment on.";
+      paintStatus();
+      return;
+    }
+    state.error = "";
+    paintStatus();
+    var note = await openModal(function (card, close) {
+      card.append(
+        el("h2", {}, "Add a note"),
+        el("p", {}, word.selectedText(session.editor).replace(/\s+/g, " ").trim()),
+        el("label", { class: "field-label", for: "comment-note" }, "Note"),
+        el("textarea", { id: "comment-note", placeholder: "What should change in this passage?" }),
+        el("div", { class: "modal-actions" }, [
+          el("button", { class: "btn ghost", type: "button", id: "modal-cancel" }, "Cancel"),
+          el("button", { class: "btn primary", type: "button", id: "modal-ok" }, "Add note")
+        ])
+      );
+      var area = card.querySelector("#comment-note");
+      card.querySelector("#modal-cancel").addEventListener("click", function () { close(null); });
+      card.querySelector("#modal-ok").addEventListener("click", function () { close(area.value.trim()); });
+      area.focus();
+    });
+    if (!note || !session.editor) return;
+    word.addComment(session.editor, "c" + Date.now().toString(36), note, range);
+    state.dirty = true;
+    refreshComments();
+    scheduleAutosave();
+  }
+
+  function onTool(name) {
+    if (!session || !session.editor || !window.RMWord) return;
+    var editor = session.editor;
+    var word = window.RMWord;
+    if (name === "bold") word.toggleBold(editor);
+    else if (name === "italic") word.toggleItalic(editor);
+    else if (name === "underline") word.toggleUnderline(editor);
+    else if (name === "h2") word.toggleHeading(editor, 2);
+    else if (name === "h3") word.toggleHeading(editor, 3);
+    else if (name === "bullet") word.toggleList(editor, "ul");
+    else if (name === "ordered") word.toggleList(editor, "ol");
+    else if (name === "undo") word.undo(editor);
+    else if (name === "redo") word.redo(editor);
+    else if (name === "clear") word.clearFormatting(editor);
+    else if (name === "link") { openLinkDialog(); return; }
+    else if (name === "comment") { openCommentDialog(); return; }
+    state.dirty = true;
+    scheduleAutosave();
+    refreshTools();
+  }
+
+  function toolbar() {
+    var items = [
+      ["bold", "Bold"],
+      ["italic", "Italic"],
+      ["underline", "Underline"],
+      ["h2", "Heading 2"],
+      ["h3", "Heading 3"],
+      ["bullet", "Bullets"],
+      ["ordered", "Numbered"],
+      ["link", "Link"],
+      ["undo", "Undo"],
+      ["redo", "Redo"],
+      ["clear", "Clear formatting"],
+      ["comment", "Add note"]
+    ];
+    var bar = el("div", { class: "toolbar", role: "toolbar", "aria-label": "Formatting" });
+    items.forEach(function (item) {
+      var button = el("button", { type: "button", class: "tool", "data-tool": item[0], "aria-pressed": "false" }, item[1]);
+      button.addEventListener("mousedown", function (event) { event.preventDefault(); });
+      button.addEventListener("click", function () { onTool(item[0]); });
+      bar.append(button);
+    });
+    return bar;
+  }
+
+  function fieldsPanel() {
+    var title = el("input", { id: "field-title", type: "text", autocomplete: "off" });
+    var description = el("textarea", { id: "field-description", rows: "4" });
+    title.addEventListener("input", function () {
+      if (!session || !session.editor) return;
+      session.titleLock = true;
+      try { window.RMWord.setH1Text(session.editor, title.value); }
+      finally { session.titleLock = false; }
+      var titleNode = document.getElementById("review-title");
+      if (titleNode) titleNode.textContent = title.value.replace(/\s+/g, " ").trim() || "Untitled draft";
+      state.dirty = true;
+      scheduleAutosave();
+    });
+    description.addEventListener("input", function () {
+      state.dirty = true;
+      scheduleAutosave();
+    });
+    return el("section", { class: "fields", "aria-label": "Page details" }, [
+      el("h2", { class: "field-heading" }, "Page details"),
+      el("label", { class: "field" }, [
+        el("span", { class: "field-label" }, "Title"),
+        title
+      ]),
+      el("label", { class: "field" }, [
+        el("span", { class: "field-label" }, "Search description"),
+        description
+      ]),
+      el("div", { id: "alt-fields" }),
+      el("div", { id: "comment-list" })
+    ]);
+  }
+
+  function currentFragment() {
+    if (!session || !session.editor || !window.RMRoundtrip) return "";
+    return window.RMRoundtrip.serializeDoc(session.editor.getJSON());
   }
 
   async function saveEdits(opts) {
@@ -707,20 +1118,24 @@
       lock = true;
     }
     var draft = state.draft;
-    var change = currentEdits();
-    if (!draft || !session || !change) {
+    var file = session && session.files[session.activePath];
+    if (!draft || !session || !file || !session.editor) {
       if (!opts.holdLock) lock = false;
       return false;
     }
-    var file = session.files[session.activePath];
-    if (!file) {
+    if (session.preserves && session.preserves.ok === false) {
+      state.error = "This draft could not be opened for editing because a photo, table, or link would be lost. Nothing was changed on GitHub.";
       if (!opts.holdLock) lock = false;
+      paintStatus();
       return false;
     }
-    var h1Changed = change.h1 !== session.snap.h1;
-    var descChanged = change.description !== session.snap.description;
-    var textChanged = Object.keys(change.edits).length > 0;
-    if (!h1Changed && !descChanged && !textChanged) {
+    var fragment = currentFragment();
+    var title = fieldText("field-title");
+    var description = fieldText("field-description");
+    var titleChanged = title !== (file.remoteTitle || "");
+    var descChanged = description !== (file.remoteDescription || "");
+    var textChanged = JSON.stringify(window.RMRoundtrip.fragmentSignature(fragment)) !== JSON.stringify(file.signature);
+    if (!titleChanged && !descChanged && !textChanged) {
       state.dirty = false;
       if (!opts.quiet) {
         state.notice = "No changes to save.";
@@ -729,19 +1144,28 @@
       if (!opts.holdLock) lock = false;
       return false;
     }
+    var nextHtml = window.RMRoundtrip.applyDocument(file.originalHtml, fragment, {
+      title: titleChanged ? title : null,
+      description: descChanged ? description : null,
+      originalH1: file.baseline.h1 || file.remoteTitle || ""
+    });
+    var check = window.RMRoundtrip.fidelityCheck(file.originalHtml, nextHtml, fragment);
+    if (!check.ok) {
+      state.error = check.message;
+      state.notice = "";
+      if (!opts.holdLock) {
+        lock = false;
+        state.busy = "";
+      }
+      paintStatus();
+      return false;
+    }
     state.busy = "Saving…";
     paintStatus();
-    var updates = {};
-    if (h1Changed) {
-      updates.title = change.h1;
-      updates.originalH1 = file.baseline.h1 || session.snap.h1;
-    }
-    if (descChanged) updates.description = change.description;
-    var nextHtml = lib.applyEdits(file.originalHtml, change.edits, updates);
     var files = [{ path: session.activePath, content: nextHtml }];
-    var nextTitle = h1Changed ? change.h1 : (draft.meta.title || draft.title);
-    var nextDesc = descChanged ? change.description : (draft.meta.meta_description || "");
-    if ((h1Changed || descChanged) && draft.jsonPath) {
+    var nextTitle = titleChanged ? title : (draft.meta.title || draft.title);
+    var nextDesc = descChanged ? description : (draft.meta.meta_description || "");
+    if ((titleChanged || descChanged) && draft.jsonPath) {
       files.push({
         path: draft.jsonPath,
         content: lib.withReviewMeta(draft.jsonText, nextTitle, nextDesc)
@@ -751,15 +1175,19 @@
       var sha = await commitFiles(draft.headRepo, draft.branch, files);
       file.originalHtml = nextHtml;
       file.baseline = baselineFrom(nextHtml);
+      file.remoteTitle = title;
+      file.remoteDescription = description;
+      file.signature = window.RMRoundtrip.fragmentSignature(fragment);
+      session.originalInner = fragment;
       draft.sha = sha;
       draft.jsonText = files.length > 1 ? files[1].content : draft.jsonText;
       draft.meta.title = nextTitle;
       draft.meta.meta_description = nextDesc;
       draft.title = nextTitle;
-      session.snap = takeSnap(document.getElementById("preview").contentDocument);
       state.dirty = false;
       if (!opts.quiet) state.notice = "Saved.";
       state.error = "";
+      writeAutosave();
       var save = document.getElementById("save-edits");
       if (save) save.classList.remove("dirty");
       return true;
@@ -830,6 +1258,11 @@
     paintStatus();
     try {
       committed = await saveEdits({ holdLock: true, quiet: true });
+      if (state.error) {
+        state.busy = "";
+        paintStatus();
+        return;
+      }
       state.busy = "Publishing…";
       paintStatus();
       await apiJson("/repos/" + draft.repo + "/pulls/" + draft.number + "/merge", {
@@ -874,11 +1307,13 @@
 
   async function sendBack() {
     if (state.busy || !state.draft) return;
+    var comments = commentLines();
     var note = await openModal(function (card, close) {
       var extra = state.dirty ? "Unsaved edits are committed to the branch first." : "The pull request stays open with the review label.";
       card.append(
         el("h2", {}, "Send back"),
         el("p", {}, extra),
+        comments ? el("pre", { class: "comment-preview" }, comments) : null,
         el("label", { class: "field-label", for: "send-note" }, "Note for the author"),
         el("textarea", { id: "send-note", placeholder: "What should change?" }),
         el("div", { class: "modal-actions" }, [
@@ -892,6 +1327,7 @@
       area.focus();
     });
     if (note == null) return;
+    if (comments && note.indexOf(comments) === -1) note = note ? (note + "\n\n" + comments) : comments;
     if (!note) {
       state.error = "Write a note before sending the draft back.";
       paintStatus();
@@ -906,6 +1342,11 @@
     try {
       if (state.dirty) {
         committed = await saveEdits({ holdLock: true, quiet: true });
+        if (state.error) {
+          state.busy = "";
+          paintStatus();
+          return;
+        }
         state.busy = "Sending…";
         paintStatus();
       }
@@ -1010,6 +1451,7 @@
 
   function goInbox() {
     if (state.dirty && !window.confirm("You have unsaved edits. Leave this draft?")) return;
+    writeAutosave();
     state.dirty = false;
     state.error = "";
     state.notice = "";
@@ -1018,6 +1460,7 @@
 
   function signOut() {
     if (state.dirty && !window.confirm("You have unsaved edits. Sign out?")) return;
+    writeAutosave();
     token = "";
     state.dirty = false;
     state.drafts = [];
@@ -1340,15 +1783,49 @@
         blobs: [],
         assetCache: new Map(),
         fetchCount: 0,
-        snap: null
+        editor: null,
+        srcMap: {},
+        showEdits: false,
+        prepared: null,
+        autosaveTimer: 0
       };
       var html = await textAt(draft.headRepo, active, draft.sha);
       session.files[active] = { originalHtml: html, baseline: baselineFrom(html) };
-      var srcdoc = await composePreview(session, active, html);
+      var prepared = await preparePreview(session, active, html);
+      session.prepared = prepared;
       if (state.screen !== "review") return;
+      var showEdits = el("button", { type: "button", id: "show-edits", class: "text-btn", "aria-pressed": "false" }, "Show my edits");
+      showEdits.addEventListener("click", function () {
+        if (!session) return;
+        session.showEdits = !session.showEdits;
+        showEdits.setAttribute("aria-pressed", session.showEdits ? "true" : "false");
+        showEdits.textContent = session.showEdits ? "Hide my edits" : "Show my edits";
+        paintDiff();
+        fitIframe(frame);
+      });
+      var advancedPre = el("pre", { id: "advanced-html" });
+      var advanced = el("details", { class: "advanced" }, [
+        el("summary", {}, "Advanced"),
+        advancedPre
+      ]);
+      advanced.addEventListener("toggle", function () {
+        if (!advanced.open || !session || !session.editor || !window.RMRoundtrip) return;
+        advancedPre.textContent = window.RMRoundtrip.serializeDoc(session.editor.getJSON());
+      });
       var grid = el("div", { class: "review-grid" }, [
-        scorecard(draft),
-        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([frame]))
+        el("div", { class: "side-column" }, [
+          fieldsPanel(),
+          scorecard(draft)
+        ]),
+        el("div", { class: "preview-wrap" }, fileSwitcher(files, active).concat([
+          toolbar(),
+          el("div", { class: "editor-status" }, [
+            el("span", { id: "save-state", role: "status" }, "Saved"),
+            showEdits
+          ]),
+          frame,
+          advanced
+        ]))
       ]);
       var note = screen.querySelector(".muted");
       if (note) note.remove();
@@ -1359,14 +1836,14 @@
         })));
       }
       frame.addEventListener("load", function () {
-        if (!frame.contentDocument || !frame.contentDocument.body) {
+        if (!frame.contentDocument || !frame.contentDocument.body || !session || !session.prepared) {
           state.error = "The preview could not be opened for editing.";
           paintStatus();
           return;
         }
-        bindPreview(frame);
+        mountEditor(frame, session.prepared);
       });
-      frame.srcdoc = srcdoc;
+      frame.srcdoc = prepared.srcdoc;
     } catch (err) {
       state.error = err.message;
       paintStatus();
@@ -1386,18 +1863,29 @@
 
   async function switchFile(path) {
     if (!session || session.activePath === path || state.busy) return;
-    state.notice = "Open one article file at a time. Save before switching if you changed this page.";
-    if (state.dirty && !window.confirm("Save is still pending. Switch files without saving this page?")) return;
+    if (state.dirty && !window.confirm("Edits on this page stay in this browser. Switch files?")) return;
+    writeAutosave();
     state.busy = "Loading…";
+    state.notice = "";
     paintStatus();
     try {
+      if (session.editor) {
+        try { session.editor.destroy(); } catch (err) { /* replaced */ }
+        session.editor = null;
+      }
       var html = session.files[path] ? session.files[path].originalHtml : await textAt(session.draft.headRepo, path, session.draft.sha);
       session.files[path] = session.files[path] || { originalHtml: html, baseline: baselineFrom(html) };
       session.activePath = path;
       session.warnings = [];
-      var srcdoc = await composePreview(session, path, session.files[path].originalHtml);
+      session.showEdits = false;
+      var showEdits = document.getElementById("show-edits");
+      if (showEdits) {
+        showEdits.setAttribute("aria-pressed", "false");
+        showEdits.textContent = "Show my edits";
+      }
+      session.prepared = await preparePreview(session, path, session.files[path].originalHtml);
       var frame = document.getElementById("preview");
-      frame.srcdoc = srcdoc;
+      frame.srcdoc = session.prepared.srcdoc;
       state.dirty = false;
       state.notice = "";
       document.querySelectorAll(".file-switch button").forEach(function (button) {
@@ -1449,6 +1937,7 @@
   });
 
   window.addEventListener("beforeunload", function (event) {
+    try { writeAutosave(); } catch (err) { /* private mode */ }
     if (!state.dirty) return;
     event.preventDefault();
     event.returnValue = "";
