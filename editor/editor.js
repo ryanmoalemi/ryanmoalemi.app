@@ -139,6 +139,9 @@
       error.accepted = res.headers.get("x-accepted-github-permissions") || "";
       throw error;
     }
+    if (method !== "GET") {
+      try { sessionStorage.removeItem("rm-editor-cache:inbox"); } catch (err) { /* ignore */ }
+    }
     return res;
   }
 
@@ -401,7 +404,8 @@
         name: "review",
         repo: params.get("repo") || "",
         pr: Number(params.get("pr")),
-        json: params.get("json") || ""
+        json: params.get("json") || "",
+        branch: params.get("branch") || ""
       };
     }
     return { name: "inbox" };
@@ -412,6 +416,7 @@
     params.set("repo", draft.repo);
     params.set("pr", String(draft.number));
     if (draft.jsonPath) params.set("json", draft.jsonPath);
+    if (draft.branch) params.set("branch", draft.branch);
     return "#review?" + params.toString();
   }
 
@@ -640,8 +645,8 @@
     var sha = pr.head && pr.head.sha;
     var branch = pr.head && pr.head.ref;
     var labels = pr.labels || [];
-    var paths = [];
-    try {
+    var paths = cacheGet("paths:" + repo + "#" + pr.number + "@" + sha, 0) || [];
+    if (!paths.length) try {
       var listing = await apiJson("/repos/" + headRepo + "/contents/review?ref=" + encodeURIComponent(sha));
       if (Array.isArray(listing)) {
         paths = listing.filter(function (file) {
@@ -655,6 +660,8 @@
       var changed = await apiPaged("/repos/" + repo + "/pulls/" + pr.number + "/files?per_page=100");
       paths = lib.reviewJsonPaths(changed.map(function (file) { return file.filename; }));
     }
+    if (paths.length) cacheSet("paths:" + repo + "#" + pr.number + "@" + sha, paths);
+    cacheSet("pr:" + repo + "#" + pr.number, prSummary(pr));
     var base = {
       repo: repo,
       headRepo: headRepo,
@@ -706,18 +713,51 @@
     return drafts;
   }
 
+  function rawFileUrl(repo, path, ref) {
+    return "https://raw.githubusercontent.com/" + repo + "/" + encodeURIComponent(ref) + "/" + lib.encodeRepoPath(path);
+  }
+
+  async function rawText(repo, path, ref) {
+    var res;
+    try { res = await fetch(rawFileUrl(repo, path, ref), { cache: "no-cache" }); }
+    catch (err) { throw new Error("Could not reach raw.githubusercontent.com."); }
+    if (!res.ok) {
+      var e = new Error("Could not load " + path + " (" + res.status + ").");
+      e.status = res.status;
+      throw e;
+    }
+    return res.text();
+  }
+
+  // Public reads go to raw.githubusercontent.com, which does not count
+  // against the 60/hour unauthenticated API limit. With a token we use the
+  // API (5,000/hour, works for private repos too).
   async function textAt(repo, path, ref) {
+    if (!token) {
+      try { return await rawText(repo, path, ref); }
+      catch (err) { if (err.status !== 404) throw err; }
+    }
     var res = await apiFetch(apiUrl("/repos/" + repo + "/contents/" + lib.encodeRepoPath(path) + "?ref=" + encodeURIComponent(ref)), { raw: true });
     var buf = await res.arrayBuffer();
     return new TextDecoder("utf-8").decode(buf);
   }
 
-  async function refreshInbox() {
+  async function refreshInbox(opts) {
+    opts = opts || {};
     var generation = ++inboxGeneration;
     state.loading = true;
     state.error = "";
     if (state.screen === "inbox") renderInbox();
     var warnings = [];
+    var cachedInbox = !opts.force && cacheGet("inbox", INBOX_CACHE_MS);
+    if (cachedInbox) {
+      state.drafts = cachedInbox;
+      state.warnings = [];
+      state.loading = false;
+      inboxLoaded = true;
+      renderInbox();
+      return;
+    }
     var groups = await Promise.all(lib.REPOS.map(async function (repo) {
       try {
         var pulls = await apiPaged("/repos/" + repo + "/pulls?state=open&per_page=50&sort=created&direction=desc");
@@ -739,9 +779,56 @@
     }
     state.drafts = lib.sortDrafts([].concat.apply([], groups));
     state.warnings = warnings;
+    if (!warnings.length) cacheSet("inbox", state.drafts);
     state.loading = false;
     inboxLoaded = true;
     renderInbox();
+  }
+
+  var CACHE_PREFIX = "rm-editor-cache:";
+  function cacheGet(key, maxAgeMs) {
+    try {
+      var hit = JSON.parse(sessionStorage.getItem(CACHE_PREFIX + key) || "null");
+      if (!hit || (maxAgeMs && Date.now() - hit.at > maxAgeMs)) return null;
+      return hit.value;
+    } catch (err) { return null; }
+  }
+  function cacheSet(key, value) {
+    try { sessionStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ at: Date.now(), value: value })); }
+    catch (err) { /* storage full or blocked */ }
+  }
+  var PR_CACHE_MS = 10 * 60 * 1000;
+  var INBOX_CACHE_MS = 5 * 60 * 1000;
+
+  function prSummary(pr) {
+    return {
+      number: pr.number, state: pr.state, title: pr.title, draft: !!pr.draft,
+      created_at: pr.created_at, html_url: pr.html_url, node_id: pr.node_id,
+      labels: (pr.labels || []).map(function (l) { return { name: l.name }; }),
+      head: { ref: pr.head && pr.head.ref, sha: pr.head && pr.head.sha,
+        repo: { full_name: pr.head && pr.head.repo && pr.head.repo.full_name } }
+    };
+  }
+
+  // Zero-API open: the link carries the branch, so the review JSON comes
+  // straight from raw.githubusercontent.com.
+  async function draftFromBranch(route, pr) {
+    var headRepo = (pr && pr.head && pr.head.repo && pr.head.repo.full_name) || route.repo;
+    var ref = route.branch;
+    var jsonText = await rawText(headRepo, route.json, ref);
+    var meta = lib.parseReview(jsonText);
+    var labels = (pr && pr.labels) || [{ name: "review" }];
+    return {
+      repo: route.repo, headRepo: headRepo, number: route.pr, branch: ref, sha: ref,
+      createdAt: pr && pr.created_at, htmlUrl: (pr && pr.html_url) || ("https://github.com/" + route.repo + "/pull/" + route.pr),
+      labels: labels.map(function (l) { return l.name; }),
+      changesRequested: lib.hasLabel(labels, "changes-requested"),
+      isDraft: !!(pr && pr.draft), nodeId: (pr && pr.node_id) || "",
+      jsonPath: route.json, jsonText: jsonText, meta: meta,
+      title: meta.title || (pr && pr.title) || "Untitled draft",
+      site: meta.site || route.repo.split("/")[1],
+      badge: lib.badgeFor(meta.scorecard), missing: false, fromBranch: true
+    };
   }
 
   async function ensureDraft(route) {
@@ -749,7 +836,24 @@
       return draft.repo === route.repo && draft.number === route.pr && (!route.json || draft.jsonPath === route.json);
     });
     if (found) return found;
-    var pr = await apiJson("/repos/" + route.repo + "/pulls/" + route.pr);
+    var prKey = "pr:" + route.repo + "#" + route.pr;
+    var cachedPr = cacheGet(prKey, PR_CACHE_MS);
+    if (!route.branch && cachedPr && cachedPr.head) route.branch = cachedPr.head.ref;
+    if (route.branch && route.json && !token) {
+      // No API call at all. Edits need a token, and with a token we
+      // take the full API path below (5,000/hour).
+      return draftFromBranch(route, cachedPr);
+    }
+    var pr = cachedPr;
+    if (!pr || token) {
+      try {
+        pr = await apiJson("/repos/" + route.repo + "/pulls/" + route.pr);
+        cacheSet(prKey, prSummary(pr));
+      } catch (err) {
+        if (err.rateLimited && route.json && (route.branch || cachedPr)) return draftFromBranch(route, cachedPr);
+        throw err;
+      }
+    }
     if (pr.state !== "open" || !lib.hasReviewLabel(pr.labels)) {
       throw new Error("That draft is not an open pull request labeled review.");
     }
@@ -3427,7 +3531,7 @@
     app.append(shell);
     paintStatus();
     shell.querySelector("#refresh").addEventListener("click", function () {
-      refreshInbox().catch(function (err) {
+      refreshInbox({ force: true }).catch(function (err) {
         state.loading = false;
         state.error = err.message;
         if (state.screen === "inbox") renderInbox();
