@@ -92,8 +92,15 @@
     if (!lib.isGitHubApiUrl(url)) {
       throw new Error("Refusing to send the token anywhere but api.github.com");
     }
+    var method = String(opts.method || "GET").toUpperCase();
+    if (!token && method !== "GET") {
+      var needs = new Error("Add your GitHub token to approve, edit or send back. Reading drafts needs no token.");
+      needs.status = 401;
+      needs.needsToken = true;
+      throw needs;
+    }
     var headers = new Headers();
-    headers.set("Authorization", "Bearer " + token);
+    if (token) headers.set("Authorization", "Bearer " + token);
     headers.set("Accept", opts.raw ? "application/vnd.github.raw" : "application/vnd.github+json");
     headers.set("X-GitHub-Api-Version", "2022-11-28");
     if (opts.body != null) headers.set("Content-Type", "application/json");
@@ -109,6 +116,17 @@
     }
     if (!res.ok) {
       var message = "GitHub API error " + res.status;
+      if ((res.status === 403 || res.status === 429) && res.headers.get("x-ratelimit-remaining") === "0") {
+        var reset = Number(res.headers.get("x-ratelimit-reset") || 0);
+        var when = reset ? new Date(reset * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "within the hour";
+        var limited = new Error(token
+          ? "GitHub's rate limit for this token is used up. It resets at " + when + "."
+          : "GitHub's limit for reading without a token (60 requests an hour per network) is used up. It resets at " + when + ". Add your token to keep reading now.");
+        limited.status = res.status;
+        limited.rateLimited = true;
+        limited.url = url;
+        throw limited;
+      }
       try {
         var data = await res.json();
         if (data && data.message) message = data.message;
@@ -363,7 +381,9 @@
       } catch (err) {
         last = err;
         if (err.status === 401) {
-          throw new Error("GitHub rejected that token. Copy the full github_pat_ value and try again.");
+          var bad = new Error("GitHub rejected that token. Copy the full github_pat_ value and try again.");
+          bad.status = 401;
+          throw bad;
         }
       }
     }
@@ -1976,6 +1996,7 @@
   }
 
   async function saveEdits(opts) {
+    if (!token) { askForToken(); return; }
     opts = opts || {};
     if (!opts.holdLock) {
       if (lock) return false;
@@ -2619,6 +2640,7 @@
   }
 
   async function publish() {
+    if (!token) { askForToken(); return; }
     if (state.busy || !state.draft) return;
     var draft = state.draft;
     var url = lib.liveUrl(draft.meta.site || draft.site, draft.meta.url_path || "/");
@@ -2665,6 +2687,7 @@
   }
 
   async function sendBack() {
+    if (!token) { askForToken(); return; }
     if (state.busy || !state.draft) return;
     var comments = commentLines();
     var note = await openModal(function (card, close) {
@@ -3063,7 +3086,14 @@
     location.hash = "#/";
   }
 
+  function askForToken() {
+    try { writeAutosave(); } catch (err) { /* private mode */ }
+    state.dirty = false;
+    renderSignin("Add your GitHub token once on this device to approve, edit or send back. It stays saved here until you sign out.");
+  }
+
   function signOut() {
+    if (!token) { askForToken(); return; }
     if (state.dirty && !window.confirm("You have unsaved edits. Sign out?")) return;
     writeAutosave();
     token = "";
@@ -3084,7 +3114,7 @@
     return el("header", { class: "top" }, [
       el("a", { class: "mark", href: "/", "aria-label": "RM logo" }, el("span", { class: "mark-letters" }, "RM")),
       el("p", { class: "top-title", id: "review-title" }, title || "Article editor"),
-      el("button", { class: "text-btn", type: "button" }, "Sign out")
+      el("button", { class: "text-btn", type: "button" }, token ? "Sign out" : "Add token")
     ]);
   }
 
@@ -3128,25 +3158,31 @@
       setBanner(shell, "Checking the token…", "ok");
       try {
         await assertToken();
-        await refreshPermissionBanner();
       } catch (err) {
         token = "";
         setBanner(shell, lib.plainText(err.message), "err");
         return;
       }
-      writeStoredToken(next);
+      // Save as soon as GitHub accepts the token, so later hiccups
+      // (permission probes, an old pending retry) never make it ask again.
+      try { writeStoredToken(next); } catch (err) { /* private mode: keep for this tab */ }
+      try { await refreshPermissionBanner(); } catch (err) { /* banner is optional */ }
+      show();
       try {
-        show();
         await retryAllPending();
       } catch (err) {
-        token = "";
-        state.loading = false;
-        inboxLoaded = false;
-        inboxGeneration += 1;
-        clearStoredToken();
-        renderSignin(lib.plainText(err.message));
+        if (err.status === 401) {
+          token = "";
+          clearStoredToken();
+          renderSignin(lib.plainText(err.message));
+          return;
+        }
+        paintStatus();
       }
     });
+    var readOnly = el("button", { class: "text-btn", type: "button", id: "read-only" }, "Just reading? Continue without a token");
+    readOnly.addEventListener("click", function () { state.error = ""; show(); });
+    form.append(readOnly);
     var repos = el("ul");
     lib.REPOS.forEach(function (repo) { repos.append(el("li", {}, repo)); });
     var help = el("details", { class: "help" }, [
@@ -3544,10 +3580,6 @@
   }
 
   function show() {
-    if (!token) {
-      renderSignin(state.error);
-      return;
-    }
     var route = parseRoute();
     if (route.name === "review" && route.repo && route.pr) renderReview(route);
     else renderInbox();
@@ -3587,7 +3619,8 @@
   async function boot() {
     var stored = readStoredToken();
     if (!stored) {
-      renderSignin("");
+      // Reading drafts in the public repos needs no token.
+      show();
       return;
     }
     token = stored;
@@ -3597,7 +3630,9 @@
       await refreshPermissionBanner();
       await retryAllPending();
     } catch (err) {
-      if (err.status === 401 || /rejected/i.test(err.message || "")) {
+      // Only forget the saved token when GitHub itself says it is bad (401).
+      // Network errors, rate limits and permission gaps keep it saved.
+      if (err.status === 401) {
         token = "";
         state.loading = false;
         state.drafts = [];
