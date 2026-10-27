@@ -770,7 +770,97 @@
     session = null;
   }
 
+  function rawPreviewUrl(sess, path) {
+    var clean = String(path || "").split(/[?#]/)[0].replace(/^\/+/, "");
+    return "https://raw.githubusercontent.com/" + sess.draft.headRepo + "/" + encodeURIComponent(sess.draft.sha) + "/" + lib.encodeRepoPath(clean);
+  }
+
+  function liveSiteUrl(sess, path) {
+    var site = String((sess.draft.meta && sess.draft.meta.site) || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    if (!site) return "";
+    return "https://" + site + "/" + String(path || "").replace(/^\/+/, "");
+  }
+
+  function previewOnlyUrl(value) {
+    var v = String(value || "").trim();
+    return !v || /^(blob:|data:|https?:|\/\/|#|about:|javascript:)/i.test(v);
+  }
+
+  // Preview-only: point relative and root-relative image URLs in the iframe at the
+  // PR head on raw.githubusercontent.com, falling back to the live site. Leaf image
+  // nodes ignore DOM attribute mutations, so saved HTML keeps the original paths.
+  function fixPreviewImages(frame, sess) {
+    var doc = frame && frame.contentDocument;
+    if (!doc || !sess || !sess.draft) return;
+    var filePath = sess.activePath || "";
+    function toRaw(v) {
+      if (previewOnlyUrl(v)) return null;
+      var path = lib.resolveRepoPath(filePath, v);
+      return path ? { raw: rawPreviewUrl(sess, path), live: liveSiteUrl(sess, path) } : null;
+    }
+    function fixSrcset(v) {
+      var changed = false;
+      var out = String(v || "").split(",").map(function (bit) {
+        var pieces = bit.trim().split(/\s+/);
+        var t = toRaw(pieces[0]);
+        if (t) { pieces[0] = t.raw; changed = true; }
+        return pieces.join(" ");
+      }).join(", ");
+      return changed ? out : null;
+    }
+    function fixNode(node) {
+      if (!node || node.nodeType !== 1) return;
+      var list = [node].concat(Array.prototype.slice.call(node.querySelectorAll("img, source, [srcset], [style*='url('], video[poster]")));
+      list.forEach(function (el) {
+        var tag = el.tagName;
+        if ((tag === "IMG" || tag === "SOURCE") && el.hasAttribute("src")) {
+          var t = toRaw(el.getAttribute("src"));
+          if (t) {
+            if (tag === "IMG" && t.live && !el.dataset.rmFallback) {
+              el.dataset.rmFallback = t.live;
+              el.addEventListener("error", function onErr() {
+                el.removeEventListener("error", onErr);
+                el.setAttribute("src", el.dataset.rmFallback);
+              });
+            }
+            el.setAttribute("src", t.raw);
+          }
+        }
+        if (el.hasAttribute("srcset")) {
+          var ss = fixSrcset(el.getAttribute("srcset"));
+          if (ss) el.setAttribute("srcset", ss);
+        }
+        if (tag === "VIDEO" && el.hasAttribute("poster")) {
+          var pt = toRaw(el.getAttribute("poster"));
+          if (pt) el.setAttribute("poster", pt.raw);
+        }
+        var style = el.getAttribute("style");
+        if (style && style.indexOf("url(") !== -1) {
+          var next = style.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, function (m, q, u) {
+            var t2 = toRaw(u);
+            return t2 ? "url(\"" + t2.raw + "\")" : m;
+          });
+          if (next !== style) el.setAttribute("style", next);
+        }
+      });
+    }
+    fixNode(doc.documentElement);
+    if (doc.__rmImgObserver) doc.__rmImgObserver.disconnect();
+    var obs = new MutationObserver(function (muts) {
+      muts.forEach(function (m) {
+        if (m.type === "childList") m.addedNodes.forEach(fixNode);
+        else if (m.type === "attributes") fixNode(m.target);
+      });
+    });
+    obs.observe(doc.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "srcset", "style", "poster"] });
+    doc.__rmImgObserver = obs;
+  }
+
   async function blobFor(sess, path) {
+    return rawPreviewUrl(sess, path);
+  }
+
+  async function blobForApi(sess, path) {
     if (sess.fetchCount > 80) throw new Error("Too many files to preview");
     var key = sess.draft.headRepo + "@" + sess.draft.sha + ":" + path;
     if (sess.assetCache.has(key)) return sess.assetCache.get(key);
@@ -3523,6 +3613,10 @@
         }
         mountEditor(frame, session.prepared);
       });
+      if (!frame.__rmImgHook) {
+        frame.__rmImgHook = true;
+        frame.addEventListener("load", function () { fixPreviewImages(frame, session); });
+      }
       frame.srcdoc = prepared.srcdoc;
     } catch (err) {
       state.error = err.message;
