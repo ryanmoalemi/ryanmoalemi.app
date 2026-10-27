@@ -30,6 +30,7 @@
     "html, body { min-height: 0 !important; height: auto !important; }",
     "main, article, .shell, .page, #rm-mount, .ProseMirror { min-height: 0 !important; }",
     ".ProseMirror { outline: none; white-space: pre-wrap; }",
+    "img.ProseMirror-separator, picture br.ProseMirror-trailingBreak { display: none !important; }",
     ".ProseMirror:focus { outline: none; }",
     ".rm-ins { background: rgba(70, 180, 90, 0.28); border-radius: 2px; }",
     ".rm-del { background: rgba(210, 50, 50, 0.2); text-decoration: line-through; border-radius: 2px; }",
@@ -855,6 +856,40 @@
     obs.observe(doc.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "srcset", "style", "poster"] });
     doc.__rmImgObserver = obs;
   }
+
+  function previewAttrValue(el, name, value) {
+    if (!session || !session.draft) return value;
+    var tag = el && el.tagName;
+    if (tag !== "IMG" && tag !== "SOURCE") return value;
+    if (name !== "src" && name !== "srcset") return value;
+    if (el.classList && el.classList.contains("rm-keep-src")) return value;
+    var filePath = session.activePath || "";
+    function one(v) {
+      if (previewOnlyUrl(v)) return v;
+      var path = lib.resolveRepoPath(filePath, v);
+      return path ? rawPreviewUrl(session, path) : v;
+    }
+    if (name === "src") return one(value);
+    return String(value || "").split(",").map(function (bit) {
+      var pieces = bit.trim().split(/\s+/);
+      pieces[0] = one(pieces[0]);
+      return pieces.join(" ");
+    }).join(", ");
+  }
+
+  function patchSetAttribute(win) {
+    if (!win || !win.Element || win.Element.prototype.__rmPatched) return;
+    var original = win.Element.prototype.setAttribute;
+    win.Element.prototype.setAttribute = function (name, value) {
+      var lower = String(name).toLowerCase();
+      if (lower === "src" || lower === "srcset") {
+        try { value = previewAttrValue(this, lower, value); } catch (err) { /* keep original */ }
+      }
+      return original.call(this, name, value);
+    };
+    win.Element.prototype.__rmPatched = true;
+  }
+  patchSetAttribute(window);
 
   async function blobFor(sess, path) {
     return rawPreviewUrl(sess, path);
@@ -3615,7 +3650,10 @@
       });
       if (!frame.__rmImgHook) {
         frame.__rmImgHook = true;
-        frame.addEventListener("load", function () { fixPreviewImages(frame, session); });
+        frame.addEventListener("load", function () {
+          try { patchSetAttribute(frame.contentWindow); } catch (err) { /* cross-origin */ }
+          fixPreviewImages(frame, session);
+        });
       }
       frame.srcdoc = prepared.srcdoc;
     } catch (err) {
