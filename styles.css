@@ -367,7 +367,7 @@ img.app-icon {
 .foot p { margin: 0; }
 .foot a { color: var(--muted); text-decoration: none; }
 .foot a:hover { color: var(--text); }
-.foot-links { display: flex; gap: 0.55rem; align-items: center; }
+.foot-links { display: flex; flex-wrap: wrap; gap: 0.55rem; align-items: center; }
 
 @media (max-width: 640px) {
   .hero { padding-top: 3rem; }
